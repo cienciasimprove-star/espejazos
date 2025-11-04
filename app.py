@@ -250,36 +250,31 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
 
 # --- NUEVA SECCIÓN: Editor de Ítems ---
 # Esta sección solo aparece si show_editor es True
+# --- NUEVA SECCIÓN: Editor de Ítems (a 1 Columna) ---
+# Esta sección solo aparece si show_editor es True
 if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
     st.header("3. Edita el Ítem Generado")
     
-    # Campo para el Enunciado
+    # --- Todos los campos se apilarán verticalmente ---
+    
     st.text_area("Enunciado (Pregunta Espejo)", key="editable_pregunta", height=150)
     
-    # Columnas para Opciones
     st.subheader("Opciones")
-    opt_col1, opt_col2 = st.columns(2)
-    with opt_col1:
-        st.text_input("Opción A", key="editable_opcion_a")
-        st.text_input("Opción B", key="editable_opcion_b")
-    with opt_col2:
-        st.text_input("Opción C", key="editable_opcion_c")
-        st.text_input("Opción D", key="editable_opcion_d")
+    st.text_input("Opción A", key="editable_opcion_a")
+    st.text_input("Opción B", key="editable_opcion_b")
+    st.text_input("Opción C", key="editable_opcion_c")
+    st.text_input("Opción D", key="editable_opcion_d")
         
-    # Campo para la Clave
+    st.subheader("Clave")
     st.text_input("Clave (Respuesta Correcta)", key="editable_clave")
 
-    # Columnas para Justificaciones
     st.subheader("Justificaciones")
-    just_col1, just_col2 = st.columns(2)
-    with just_col1:
-        st.text_area("Justificación Clave", key="editable_just_clave", height=100)
-        st.text_area("Justificación A", key="editable_just_a", height=100)
-        st.text_area("Justificación B", key="editable_just_b", height=100)
-    with just_col2:
-        st.text_area("Justificación C", key="editable_just_c", height=100)
-        st.text_area("Justificación D", key="editable_just_d", height=100)
+    st.text_area("Justificación Clave", key="editable_just_clave", height=100)
+    st.text_area("Justificación A", key="editable_just_a", height=100)
+    st.text_area("Justificación B", key="editable_just_b", height=100)
+    st.text_area("Justificación C", key="editable_just_c", height=100)
+    st.text_area("Justificación D", key="editable_just_d", height=100)
 
     # --- SECCIÓN DE DESCARGA (AHORA DEPENDE DE LOS DATOS EDITADOS) ---
     st.divider()
@@ -304,8 +299,6 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
             {"opcion": "C", "justificacion": st.session_state.editable_just_c},
             {"opcion": "D", "justificacion": st.session_state.editable_just_d},
         ]
-        # Nota: "descripcion_imagen_original" no se hizo editable,
-        # pero podría añadirse si es necesario.
     }
     
     col_word, col_excel = st.columns(2)
