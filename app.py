@@ -4,39 +4,37 @@ import io
 import base64
 import pandas as pd
 from docx import Document
+from docx.shared import Inches
 # Importa la librería de Vertex AI
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, Image as VertexImage
 import json
 
 # --- Configuración de Google Cloud (hacer al inicio) ---
+# Descomenta esta línea y configúrala con tu proyecto y región
 # vertexai.init(project="tu-proyecto-gcp", location="tu-region")
 
 # --- Función Placeholder para llamar a Vertex AI ---
-# Esta es la función central (Punto 4)
 def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     """
     Llama a Vertex AI (Gemini) para analizar la imagen y el texto
     y generar el nuevo ítem y las justificaciones.
     """
     
-    # 1. Inicializar el modelo multimodal (ej. Gemini 1.5 Pro)
-    model = GenerativeModel("gemini-2.5-flash-lite") 
+    # 1. Inicializar el modelo multimodal
+    # Nota: "gemini-2.5-flash-lite" puede ser un nombre de modelo no final.
+    # Asegúrate de usar un modelo multimodal disponible en tu proyecto,
+    # como "gemini-1.5-pro-001" o "gemini-1.5-flash-001"
+    model = GenerativeModel("gemini-1.5-flash-001") 
 
     # 2. Cargar la imagen y convertirla para la API
-    # imagen_cargada es el objeto de st.file_uploader
     img_pil = Image.open(imagen_cargada)
-    
-    # Convertir PIL Image a bytes
     buffered = io.BytesIO()
     img_pil.save(buffered, format="PNG")
     img_bytes = buffered.getvalue()
-
-    # Crear el objeto de imagen para Vertex AI
     vertex_img = VertexImage.from_bytes(img_bytes)
 
-    # 3. Diseño del Prompt (La parte más importante)
-    # Aquí integramos la idea de "Shells Cognitivos"
+    # 3. Diseño del Prompt
     prompt_texto = f"""
     Eres un experto en psicometría y diseño de ítems educativos.
     Tu tarea es analizar una pregunta de selección múltiple (presentada como imagen)
@@ -98,15 +96,8 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     st.info("Generando ítem... esto puede tardar un momento.")
     
     try:
-        # Combinar la imagen y el prompt de texto
         response = model.generate_content([vertex_img, prompt_texto])
-        
-        # Asumiendo que la respuesta es un JSON como se solicitó
-        # Es crucial limpiar el 'markdown' que a veces añade el modelo
         respuesta_texto = response.text.strip().replace("```json", "").replace("```", "")
-        
-        # Aquí deberías parsear el JSON (import json)
-        # Por simplicidad, aquí solo devolvemos el texto
         return respuesta_texto 
 
     except Exception as e:
@@ -114,18 +105,28 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
         return None
 
 # --- Funciones de Exportación (Punto 5) ---
+# --- ACTUALIZADAS PARA INCLUIR TODOS LOS CAMPOS ---
 
 def crear_excel(datos_generados):
-    # Aquí 'datos_generados' debería ser el JSON parseado
-    # Esto es un ejemplo simplificado
-    df = pd.DataFrame({
-        'Componente': ['Pregunta Espejo', 'Clave', 'Justificación Clave'],
-        'Contenido': [
-            datos_generados.get("pregunta_espejo", ""),
-            datos_generados.get("clave", ""),
-            datos_generados.get("justificacion_clave", "")
-        ]
-    })
+    # 'datos_generados' es el diccionario con los datos (posiblemente editados)
+    
+    # Crear una lista de filas para el DataFrame
+    data_rows = []
+    
+    data_rows.append({"Componente": "Pregunta Espejo", "Contenido": datos_generados.get("pregunta_espejo", "")})
+    
+    opciones = datos_generados.get("opciones", {})
+    for letra, texto in opciones.items():
+        data_rows.append({"Componente": f"Opción {letra}", "Contenido": texto})
+        
+    data_rows.append({"Componente": "Clave", "Contenido": datos_generados.get("clave", "")})
+    data_rows.append({"Componente": "Justificación Clave", "Contenido": datos_generados.get("justificacion_clave", "")})
+    
+    justificaciones = datos_generados.get("justificaciones_distractores", [])
+    for just in justificaciones:
+        data_rows.append({"Componente": f"Justificación {just.get('opcion')}", "Contenido": just.get('justificacion')})
+
+    df = pd.DataFrame(data_rows)
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -134,11 +135,11 @@ def crear_excel(datos_generados):
     return output.getvalue()
 
 def crear_word(datos_generados):
-    # Aquí 'datos_generados' debería ser el JSON parseado
+    # 'datos_generados' es el diccionario con los datos (posiblemente editados)
     document = Document()
     document.add_heading('Ítem Espejo Generado', level=1)
     
-    document.add_heading('Pregunta Espejo', level=2)
+    document.add_heading('Pregunta Espejo (Enunciado)', level=2)
     document.add_paragraph(datos_generados.get("pregunta_espejo", "N/A"))
     
     document.add_heading('Opciones', level=3)
@@ -146,9 +147,18 @@ def crear_word(datos_generados):
     for letra, texto in opciones.items():
         document.add_paragraph(f"**{letra}:** {texto}")
 
+    document.add_heading('Clave', level=2)
+    document.add_paragraph(datos_generados.get('clave', 'N/A'))
+    
     document.add_heading('Justificaciones', level=2)
-    document.add_paragraph(f"**Clave:** {datos_generados.get('clave', 'N/A')}")
     document.add_paragraph(f"**Justificación de la Clave:** {datos_generados.get('justificacion_clave', 'N/A')}")
+    
+    document.add_heading('Justificaciones de Distractores', level=3)
+    justificaciones = datos_generados.get("justificaciones_distractores", [])
+    for just in justificaciones:
+        # No justificar la clave dos veces
+        if just.get('opcion') != datos_generados.get('clave'):
+            document.add_paragraph(f"**Justificación {just.get('opcion')}:** {just.get('justificacion')}")
     
     output = io.BytesIO()
     document.save(output)
@@ -164,7 +174,6 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.header("1. Cargar Ítem Original")
-    # (Punto 1)
     imagen_subida = st.file_uploader(
         "Sube el pantallazo de la pregunta", 
         type=["png", "jpg", "jpeg"]
@@ -176,15 +185,9 @@ with col1:
 with col2:
     st.header("2. Configurar Generación")
     
-    # (Punto 2)
-    # Debes pre-cargar tu lista de taxonomías
     TAXONOMIAS_PRECARGADAS = [
-        "Recordar (Bloom)",
-        "Comprender (Bloom)",
-        "Aplicar (Bloom)",
-        "Analizar (Bloom)",
-        "Evaluar (Bloom)",
-        "Crear (Bloom)",
+        "Recordar (Bloom)", "Comprender (Bloom)", "Aplicar (Bloom)",
+        "Analizar (Bloom)", "Evaluar (Bloom)", "Crear (Bloom)",
         "Otro Nivel Taxonómico"
     ]
     taxonomia_sel = st.selectbox(
@@ -192,7 +195,6 @@ with col2:
         options=TAXONOMIAS_PRECARGADAS
     )
     
-    # (Punto 3)
     info_adicional = st.text_area(
         "Información adicional (ej. tema específico, contexto)",
         height=150,
@@ -203,53 +205,132 @@ with col2:
 st.divider()
 if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primary"):
     if imagen_subida is not None:
-        # (Punto 4)
-        # Aquí se llama a la función de Vertex AI
-        resultado_generado = generar_item_espejo(
+        resultado_generado_texto = generar_item_espejo(
             imagen_subida, 
             taxonomia_sel, 
             info_adicional
         )
         
-        if resultado_generado:
-            st.success("¡Ítem generado con éxito!")
-            # Guardamos el resultado en el estado de la sesión
-            # Asumiendo que 'resultado_generado' es el texto JSON
-            # En un caso real, aquí deberías parsear el JSON
-            st.session_state['resultado_json_texto'] = resultado_generado
-            st.session_state['resultado_json_obj'] = json.loads(resultado_generado) # Parsear
-            
-            # Mostrar la salida
-            st.json(st.session_state['resultado_json_obj'])
-
+        if resultado_generado_texto:
+            st.success("¡Ítem generado con éxito! Puedes editarlo abajo.")
+            try:
+                # --- LÓGICA DE INICIALIZACIÓN ---
+                datos_obj = json.loads(resultado_generado_texto)
+                
+                # Guardar el objeto original por si acaso
+                st.session_state['resultado_json_obj'] = datos_obj
+                
+                # Inicializar el estado para cada campo editable
+                st.session_state.editable_pregunta = datos_obj.get("pregunta_espejo", "")
+                
+                opciones = datos_obj.get("opciones", {})
+                st.session_state.editable_opcion_a = opciones.get("A", "")
+                st.session_state.editable_opcion_b = opciones.get("B", "")
+                st.session_state.editable_opcion_c = opciones.get("C", "")
+                st.session_state.editable_opcion_d = opciones.get("D", "")
+                
+                st.session_state.editable_clave = datos_obj.get("clave", "")
+                st.session_state.editable_just_clave = datos_obj.get("justificacion_clave", "")
+                
+                # Mapear justificaciones de distractores
+                justifs_list = datos_obj.get("justificaciones_distractores", [])
+                justifs_map = {j.get('opcion'): j.get('justificacion') for j in justifs_list}
+                
+                st.session_state.editable_just_a = justifs_map.get("A", "Justificación para A no generada.")
+                st.session_state.editable_just_b = justifs_map.get("B", "Justificación para B no generada.")
+                st.session_state.editable_just_c = justifs_map.get("C", "Justificación para C no generada.")
+                st.session_state.editable_just_d = justifs_map.get("D", "Justificación para D no generada.")
+                
+                # Bandera para mostrar el editor
+                st.session_state.show_editor = True
+                
+            except json.JSONDecodeError:
+                st.error("Error: La respuesta de la IA no fue un JSON válido.")
+                st.text(resultado_generado_texto) # Mostrar el texto crudo para depurar
+                st.session_state.show_editor = False
     else:
         st.warning("Por favor, sube una imagen primero.")
 
-# --- Sección de Descarga (Punto 5) ---
-if 'resultado_json_obj' in st.session_state:
+# --- NUEVA SECCIÓN: Editor de Ítems ---
+# Esta sección solo aparece si show_editor es True
+if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
-    st.header("3. Descargar Resultados")
+    st.header("3. Edita el Ítem Generado")
     
-    datos_obj = st.session_state['resultado_json_obj']
+    # Campo para el Enunciado
+    st.text_area("Enunciado (Pregunta Espejo)", key="editable_pregunta", height=150)
+    
+    # Columnas para Opciones
+    st.subheader("Opciones")
+    opt_col1, opt_col2 = st.columns(2)
+    with opt_col1:
+        st.text_input("Opción A", key="editable_opcion_a")
+        st.text_input("Opción B", key="editable_opcion_b")
+    with opt_col2:
+        st.text_input("Opción C", key="editable_opcion_c")
+        st.text_input("Opción D", key="editable_opcion_d")
+        
+    # Campo para la Clave
+    st.text_input("Clave (Respuesta Correcta)", key="editable_clave")
+
+    # Columnas para Justificaciones
+    st.subheader("Justificaciones")
+    just_col1, just_col2 = st.columns(2)
+    with just_col1:
+        st.text_area("Justificación Clave", key="editable_just_clave", height=100)
+        st.text_area("Justificación A", key="editable_just_a", height=100)
+        st.text_area("Justificación B", key="editable_just_b", height=100)
+    with just_col2:
+        st.text_area("Justificación C", key="editable_just_c", height=100)
+        st.text_area("Justificación D", key="editable_just_d", height=100)
+
+    # --- SECCIÓN DE DESCARGA (AHORA DEPENDE DE LOS DATOS EDITADOS) ---
+    st.divider()
+    st.header("4. Descargar Resultados")
+    
+    # --- LÓGICA DE RE-ENSAMBLE ---
+    # Re-construir el diccionario 'datos' a partir del session_state
+    # Esto asegura que los datos descargados sean los datos editados
+    datos_editados = {
+        "pregunta_espejo": st.session_state.editable_pregunta,
+        "opciones": {
+            "A": st.session_state.editable_opcion_a,
+            "B": st.session_state.editable_opcion_b,
+            "C": st.session_state.editable_opcion_c,
+            "D": st.session_state.editable_opcion_d,
+        },
+        "clave": st.session_state.editable_clave,
+        "justificacion_clave": st.session_state.editable_just_clave,
+        "justificaciones_distractores": [
+            {"opcion": "A", "justificacion": st.session_state.editable_just_a},
+            {"opcion": "B", "justificacion": st.session_state.editable_just_b},
+            {"opcion": "C", "justificacion": st.session_state.editable_just_c},
+            {"opcion": "D", "justificacion": st.session_state.editable_just_d},
+        ]
+        # Nota: "descripcion_imagen_original" no se hizo editable,
+        # pero podría añadirse si es necesario.
+    }
     
     col_word, col_excel = st.columns(2)
     
     with col_word:
-        archivo_word = crear_word(datos_obj)
+        # Pasar los datos editados a la función de creación
+        archivo_word = crear_word(datos_editados)
         st.download_button(
             label="Descargar en Word (.docx)",
             data=archivo_word,
-            file_name="item_espejo.docx",
+            file_name="item_espejo_editado.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True
         )
         
     with col_excel:
-        archivo_excel = crear_excel(datos_obj)
+        # Pasar los datos editados a la función de creación
+        archivo_excel = crear_excel(datos_editados)
         st.download_button(
             label="Descargar en Excel (.xlsx)",
             data=archivo_excel,
-            file_name="item_espejo.xlsx",
+            file_name="item_espejo_editado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
