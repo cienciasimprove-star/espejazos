@@ -16,6 +16,7 @@ import json
 
 # --- Función Placeholder para llamar a Vertex AI ---
 
+# --- Función Placeholder para llamar a Vertex AI (ACTUALIZADA) ---
 def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     """
     Llama a Vertex AI (Gemini) para analizar la imagen y el texto
@@ -23,7 +24,7 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     """
     
     # 1. Inicializar el modelo multimodal
-    model = GenerativeModel("gemini-2.5-flash-lite") 
+    model = GenerativeModel("gemini-1.5-flash-001") 
 
     # 2. Cargar la imagen y convertirla para la API
     img_pil = Image.open(imagen_cargada)
@@ -32,15 +33,15 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     img_bytes = buffered.getvalue()
     vertex_img = VertexImage.from_bytes(img_bytes)
 
-    # 3. Diseño del Prompt (La parte más importante)
+    # 3. Diseño del Prompt (ACTUALIZADO CON NUEVAS REGLAS)
     prompt_texto = f"""
     Eres un experto en psicometría y diseño de ítems educativos.
     Tu tarea es analizar una pregunta de selección múltiple (presentada como imagen)
     y generar una "pregunta espejo" basada en el concepto de 'shell cognitivo' de Shavelson.
 
     **Shell Cognitivo (Pregunta Original):**
-    Analiza la estructura lógica, el tipo de habilidad cognitiva evaluada y el formato
-    de la pregunta en la imagen adjunta.
+    Analiza la estructura lógica, el tipo de habilidad cognitiva (la "Tarea Cognitiva")
+    y el formato de la pregunta en la imagen adjunta.
 
     **Taxonomía Requerida:**
     La nueva pregunta debe alinearse con esta taxonomía: {taxonomia}
@@ -48,29 +49,36 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     **Contexto Adicional del Usuario:**
     {contexto_adicional}
 
-    **Instrucciones de Generación:**
+    --- INSTRUCCIONES DETALLADAS DE GENERACIÓN ---
 
-    1.  **Generar Pregunta Espejo (Punto 4.1):**
-        Crea una nueva pregunta que mantenga la misma estructura cognitiva (el 'shell')
-        que la pregunta original, pero utiliza un contenido temático diferente.
-        Asegúrate de que la dificultad y la habilidad medida sean equivalentes.
-        Escribe **únicamente el enunciado** o 'stem' de la pregunta. 
-        **NO incluyas las opciones (A, B, C, D)** en este campo; estas deben ir por separado en el objeto "opciones" del JSON.
+    **1. Generar Pregunta Espejo (Enunciado):**
+    * Crea una nueva pregunta que mantenga la misma estructura cognitiva (el 'shell') que la pregunta original, pero utiliza un contenido temático diferente.
+    * Asegúrate de que la dificultad y la habilidad medida (la Tarea Cognitiva) sean equivalentes.
+    * **CRÍTICO:** Escribe **únicamente el enunciado** o 'stem' de la pregunta. NO incluyas las opciones (A, B, C, D) en este campo.
+    * Formula una pregunta clara, directa, sin ambigüedades ni tecnicismos innecesarios.
+    * **¡INSTRUCCIÓN CRÍTICA DE ESTILO!** Evita terminantemente formular preguntas que pidan al estudiante comparar o jerarquizar opciones. **NO USES** frases como "¿cuál es la opción más...", "¿cuál es el mejor...", "¿cuál describe principalmente...?".
+    * En su lugar, formula preguntas directas como: "**¿Cuál es la causa de...?**", "**¿Qué conclusión se deriva de...?**".
+    * Si utilizas negaciones, resáltalas en MAYÚSCULAS Y NEGRITA (por ejemplo: **NO ES**, **EXCEPTO**).
 
-    2.  **Descripción de Imagen (Punto 4.2):**
-        Si la pregunta original usaba una imagen, genera una descripción textual 
-        detallada de esa imagen y describe qué tipo de imagen se necesitaría
-        para la nueva "pregunta espejo" (si aplica). Si no hay imagen, indica "N/A".
+    **2. Generar Opciones de Respuesta:**
+    * Escribe exactamente cuatro opciones (A, B, C y D).
+    * **Opción Correcta**: Debe ser la única conclusión válida tras ejecutar correctamente la Tarea Cognitiva (el 'shell').
+    * **Distractores (Incorrectos)**: Deben ser plausibles y diseñados a partir de errores típicos en la ejecución de la Tarea Cognitiva (Ej: un distractor podría ser el resultado de aplicar un proceso cognitivo inferior, como simplemente recordar un dato, en lugar de analizarlo).
+    * Las respuestas deben tener una estructura gramatical y longitud similares.
+    * No utilices fórmulas vagas como “ninguna de las anteriores” o “todas las anteriores”.
 
-    3.  **Justificaciones (Punto 4.3):**
-        Para la NUEVA pregunta espejo que generaste:
-        * Identifica la clave (respuesta correcta).
-        * Escribe una justificación detallada de por qué la clave es correcta.
-        * Escribe justificaciones detalladas para CADA una de las opciones no válidas
-            (distractores), explicando el error conceptual que representa cada una.
+    **3. Descripción de Imagen Original:**
+    * Si la pregunta original usaba una imagen, genera una descripción textual detallada de esa imagen. Si no hay imagen, indica "N/A".
 
-    **Formato de Salida (JSON):**
-    Responde ÚNICAMENTE con un objeto JSON válido con la siguiente estructura:
+    **4. Justificaciones (Formato Estricto):**
+    * Para la NUEVA pregunta espejo que generaste:
+    * **Justificación de la Clave:** Explica detalladamente el razonamiento o proceso cognitivo que lleva a la respuesta correcta. NO justifiques por descarte.
+    * **Justificaciones de Distractores:** Para CADA opción (incluida la correcta, para el mapeo), sigue este formato:
+        * Si la opción es la clave: "Esta es la respuesta correcta porque..." (repites la justificación de la clave).
+        * Si la opción es un distractor: "El estudiante podría escoger esta opción porque… Sin embargo, esto es incorrecto porque…"
+
+    --- FORMATO DE SALIDA OBLIGATORIO (JSON) ---
+    Responde ÚNICAMENTE con un objeto JSON válido con la siguiente estructura (esta estructura es fija para que la aplicación funcione):
     {{
       "pregunta_espejo": "Texto completo del enunciado/stem de la nueva pregunta...",
       "opciones": {{
@@ -81,12 +89,12 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
       }},
       "clave": "A",
       "descripcion_imagen_original": "Descripción de la imagen en la pregunta de entrada...",
-      "justificacion_clave": "Razón por la que la clave es correcta...",
+      "justificacion_clave": "Razón por la que la clave es correcta (sigue el formato estricto)...",
       "justificaciones_distractores": [
-        {{ "opcion": "A", "justificacion": "Por qué A es incorrecta..." }},
-        {{ "opcion": "B", "justificacion": "Por qué B es incorrecta..." }},
-        {{ "opcion": "C", "justificacion": "Por qué C es incorrecta..." }},
-        {{ "opcion": "D", "justificacion": "Por qué D es incorrecta..." }}
+        {{ "opcion": "A", "justificacion": "Justificación para A (sigue el formato estricto)..." }},
+        {{ "opcion": "B", "justificacion": "Justificación para B (sigue el formato estricto)..." }},
+        {{ "opcion": "C", "justificacion": "Justificación para C (sigue el formato estricto)..." }},
+        {{ "opcion": "D", "justificacion": "Justificación para D (sigue el formato estricto)..." }}
       ]
     }}
     """
