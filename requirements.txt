@@ -1,0 +1,17 @@
+# --- Framework de la App Web ---
+streamlit
+
+# --- SDK de Google Cloud para Vertex AI (Gemini) ---
+google-cloud-aiplatform
+
+# --- Manipulación de datos y exportación a Excel ---
+pandas
+
+# --- Motor para que Pandas pueda escribir archivos .xlsx ---
+openpyxl
+
+# --- Para crear y manipular archivos .docx (Word) ---
+python-docx
+
+# --- Para procesamiento de imágenes (leer la imagen subida) ---
+Pillow
