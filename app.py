@@ -7,6 +7,7 @@ from docx import Document
 # Importa la librería de Vertex AI
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, Image as VertexImage
+import json
 
 # --- Configuración de Google Cloud (hacer al inicio) ---
 # vertexai.init(project="tu-proyecto-gcp", location="tu-region")
@@ -216,7 +217,7 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
             # Asumiendo que 'resultado_generado' es el texto JSON
             # En un caso real, aquí deberías parsear el JSON
             st.session_state['resultado_json_texto'] = resultado_generado
-            st.session_state['resultado_json_obj'] = pd.io.json.loads(resultado_generado) # Parsear
+            st.session_state['resultado_json_obj'] = json.loads(resultado_generado) # Parsear
             
             # Mostrar la salida
             st.json(st.session_state['resultado_json_obj'])
