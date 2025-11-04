@@ -171,7 +171,7 @@ with col1:
     )
     
     if imagen_subida:
-        st.image(imagen_subida, caption="Ítem cargado", use_column_width=True)
+        st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
 
 with col2:
     st.header("2. Configurar Generación")
