@@ -24,7 +24,7 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     """
     
     # 1. Inicializar el modelo multimodal
-    model = GenerativeModel("gemini-1.5-flash-001") 
+    model = GenerativeModel("gemini-2.5-flash-lite") 
 
     # 2. Cargar la imagen y convertirla para la API
     img_pil = Image.open(imagen_cargada)
