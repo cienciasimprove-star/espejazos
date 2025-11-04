@@ -15,6 +15,7 @@ import json
 # vertexai.init(project="tu-proyecto-gcp", location="tu-region")
 
 # --- Función Placeholder para llamar a Vertex AI ---
+
 def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     """
     Llama a Vertex AI (Gemini) para analizar la imagen y el texto
@@ -22,7 +23,7 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     """
     
     # 1. Inicializar el modelo multimodal
-    model = GenerativeModel("gemini-2.5-flash-lite") 
+    model = GenerativeModel("gemini-1.5-flash-001") 
 
     # 2. Cargar la imagen y convertirla para la API
     img_pil = Image.open(imagen_cargada)
@@ -31,7 +32,7 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     img_bytes = buffered.getvalue()
     vertex_img = VertexImage.from_bytes(img_bytes)
 
-    # 3. Diseño del Prompt
+    # 3. Diseño del Prompt (La parte más importante)
     prompt_texto = f"""
     Eres un experto en psicometría y diseño de ítems educativos.
     Tu tarea es analizar una pregunta de selección múltiple (presentada como imagen)
@@ -53,7 +54,8 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
         Crea una nueva pregunta que mantenga la misma estructura cognitiva (el 'shell')
         que la pregunta original, pero utiliza un contenido temático diferente.
         Asegúrate de que la dificultad y la habilidad medida sean equivalentes.
-        Presenta la pregunta completa con sus opciones (A, B, C, D...).
+        Escribe **únicamente el enunciado** o 'stem' de la pregunta. 
+        **NO incluyas las opciones (A, B, C, D)** en este campo; estas deben ir por separado en el objeto "opciones" del JSON.
 
     2.  **Descripción de Imagen (Punto 4.2):**
         Si la pregunta original usaba una imagen, genera una descripción textual 
@@ -70,7 +72,7 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     **Formato de Salida (JSON):**
     Responde ÚNICAMENTE con un objeto JSON válido con la siguiente estructura:
     {{
-      "pregunta_espejo": "Texto completo de la nueva pregunta...",
+      "pregunta_espejo": "Texto completo del enunciado/stem de la nueva pregunta...",
       "opciones": {{
         "A": "Texto de la opción A",
         "B": "Texto de la opción B",
@@ -94,12 +96,17 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     
     try:
         response = model.generate_content([vertex_img, prompt_texto])
+        
+        # Es crucial limpiar el 'markdown' que a veces añade el modelo
         respuesta_texto = response.text.strip().replace("```json", "").replace("```", "")
+        
         return respuesta_texto 
 
     except Exception as e:
         st.error(f"Error al contactar Vertex AI: {e}")
         return None
+
+
 
 # --- Funciones de Exportación (Punto 5) ---
 # --- ACTUALIZADAS PARA INCLUIR TODOS LOS CAMPOS ---
