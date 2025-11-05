@@ -14,17 +14,17 @@ import json
 # Descomenta esta línea y configúrala con tu proyecto y región
 # vertexai.init(project="tu-proyecto-gcp", location="tu-region")
 
-# --- Función Placeholder para llamar a Vertex AI ---
-
-# --- Función Placeholder para llamar a Vertex AI (ACTUALIZADA) ---
-def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
+# --- FUNCIÓN DE IA (MODIFICADA) ---
+# Ahora acepta un diccionario 'taxonomia_dict' en lugar de un string
+def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     """
     Llama a Vertex AI (Gemini) para analizar la imagen y el texto
     y generar el nuevo ítem y las justificaciones.
     """
     
     # 1. Inicializar el modelo multimodal
-    model = GenerativeModel("gemini-2.5-flash-lite") 
+    # Asegúrate de que este modelo exista en tu proyecto (ej: "gemini-1.5-flash-001")
+    model = GenerativeModel("gemini-1.5-flash-001") 
 
     # 2. Cargar la imagen y convertirla para la API
     img_pil = Image.open(imagen_cargada)
@@ -32,6 +32,18 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     img_pil.save(buffered, format="PNG")
     img_bytes = buffered.getvalue()
     vertex_img = VertexImage.from_bytes(img_bytes)
+
+    # 3. Construir el string de taxonomía para el prompt
+    # a partir del diccionario
+    taxonomia_texto = f"""
+        * Grado: {taxonomia_dict.get('Grado', 'N/A')}
+        * Área: {taxonomia_dict.get('Area', 'N/A')}
+        * Componente: {taxonomia_dict.get('Componente', 'N/A')}
+        * Ref. Temática: {taxonomia_dict.get('Ref. Temática', 'N/A')}
+        * Competencia: {taxonomia_dict.get('Competencia', 'N/A')}
+        * Afirmación: {taxonomia_dict.get('Afirmación', 'N/A')}
+        * Evidencia: {taxonomia_dict.get('Evidencia', 'N/A')}
+    """
 
     # 3. Diseño del Prompt (ACTUALIZADO CON NUEVAS REGLAS)
     prompt_texto = f"""
@@ -44,7 +56,8 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
     y el formato de la pregunta en la imagen adjunta.
 
     **Taxonomía Requerida:**
-    La nueva pregunta debe alinearse con esta taxonomía: {taxonomia}
+    La nueva pregunta debe alinearse con esta taxonomía detallada:
+    {taxonomia_texto}
 
     **Contexto Adicional del Usuario:**
     {contexto_adicional}
@@ -117,7 +130,7 @@ def generar_item_espejo(imagen_cargada, taxonomia, contexto_adicional):
 
 
 # --- Funciones de Exportación (Punto 5) ---
-# --- ACTUALIZADAS PARA INCLUIR TODOS LOS CAMPOS ---
+# --- (Sin cambios) ---
 
 def crear_excel(datos_generados):
     # 'datos_generados' es el diccionario con los datos (posiblemente editados)
@@ -194,39 +207,125 @@ with col1:
     if imagen_subida:
         st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
 
+# --- COLUMNA 2 (MODIFICADA) ---
 with col2:
     st.header("2. Configurar Generación")
     
-    TAXONOMIAS_PRECARGADAS = [
-        "Recordar (Bloom)", "Comprender (Bloom)", "Aplicar (Bloom)",
-        "Analizar (Bloom)", "Evaluar (Bloom)", "Crear (Bloom)",
-        "Otro Nivel Taxonómico"
-    ]
-    taxonomia_sel = st.selectbox(
-        "Selecciona la taxonomía del ítem", 
-        options=TAXONOMIAS_PRECARGADAS
-    )
+    # --- 1. Carga del Excel ---
+    excel_file = st.file_uploader("Cargar Excel de Taxonomía", type=['xlsx'])
     
+    # Variables para almacenar las selecciones
+    grado_sel = None
+    area_sel = None
+    comp_sel = None
+    ref_sel = None
+    competen_sel = None
+    afirm_sel = None
+    evid_sel = None
+    
+    # --- 2. Lógica de Filtros en Cascada ---
+    if excel_file is not None:
+        try:
+            # Cargar hojas en el estado de la sesión para evitar recargas
+            if 'df1' not in st.session_state or 'df2' not in st.session_state:
+                data = pd.read_excel(excel_file, sheet_name=None)
+                st.session_state.df1 = data['Hoja 1']
+                st.session_state.df2 = data['Hoja 2']
+            
+            df1 = st.session_state.df1
+            df2 = st.session_state.df2
+
+            # --- Filtro 1: Grado ---
+            grados = df1['Grado'].unique()
+            grado_sel = st.selectbox("Grado", options=grados)
+
+            # --- Filtro 2: Area ---
+            df_grado = df1[df1['Grado'] == grado_sel]
+            areas = df_grado['Area'].unique()
+            area_sel = st.selectbox("Area", options=areas)
+
+            # --- Filtro 3: Componente ---
+            df_area = df_grado[df_grado['Area'] == area_sel]
+            componentes = df_area['Componente'].unique()
+            comp_sel = st.selectbox("Componente", options=componentes)
+
+            # --- Filtro 4: Ref. Temática (de Hoja 2) ---
+            df_ref = df2[
+                (df2['Grado'] == grado_sel) & 
+                (df2['Area'] == area_sel) & 
+                (df2['Componente'] == comp_sel)
+            ]
+            refs = df_ref['Ref. Temática'].unique()
+            ref_sel = st.selectbox("Ref. Temática", options=refs)
+
+            # --- Filtro 5: Competencia ---
+            # (Depende de Grado y Area)
+            competencias = df_area['Competencia'].unique()
+            competen_sel = st.selectbox("Competencia", options=competencias)
+
+            # --- Filtro 6: Afirmación (con lógica especial) ---
+            df_competencia = df_area[df_area['Competencia'] == competen_sel]
+            
+            if area_sel == 'Ciencias Naturales':
+                # Filtro adicional por Componente para Ciencias
+                df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp_sel]
+            else:
+                df_afirmacion_base = df_competencia
+                
+            afirmaciones = df_afirmacion_base['Afirmación'].unique()
+            afirm_sel = st.selectbox("Afirmación", options=afirmaciones)
+
+            # --- Filtro 7: Evidencia ---
+            df_afirmacion = df_afirmacion_base[df_afirmacion_base['Afirmación'] == afirm_sel]
+            evidencias = df_afirmacion['Evidencia'].unique()
+            evid_sel = st.selectbox("Evidencia", options=evidencias)
+
+        except Exception as e:
+            st.error(f"Error al procesar el Excel. Asegúrate que 'Hoja 1' y 'Hoja 2' existan y tengan las columnas correctas. Detalle: {e}")
+            excel_file = None # Resetea para evitar errores
+    
+    # --- 3. Info Adicional (como estaba) ---
     info_adicional = st.text_area(
         "Información adicional (ej. tema específico, contexto)",
         height=150,
         placeholder="Ej: 'Usar el tema de fotosíntesis', 'Enfocar en estudiantes de grado 10'"
     )
 
-# --- Botón de Generación ---
+# --- Botón de Generación (MODIFICADO) ---
 st.divider()
 if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primary"):
-    if imagen_subida is not None:
+    
+    # --- Validaciones ---
+    if imagen_subida is None:
+        st.warning("Por favor, sube una imagen primero.")
+    elif excel_file is None:
+        st.warning("Por favor, carga el archivo Excel de taxonomía.")
+    elif evid_sel is None: # Si el último filtro no está seteado, los demás tampoco
+        st.warning("Error en los filtros de taxonomía. Revisa el Excel.")
+    
+    else:
+        # --- Empaquetar la taxonomía seleccionada en un diccionario ---
+        taxonomia_seleccionada = {
+            "Grado": grado_sel,
+            "Area": area_sel,
+            "Componente": comp_sel,
+            "Ref. Temática": ref_sel,
+            "Competencia": competen_sel,
+            "Afirmación": afirm_sel,
+            "Evidencia": evid_sel
+        }
+        
+        # --- Llamar a la función de IA con los nuevos parámetros ---
         resultado_generado_texto = generar_item_espejo(
             imagen_subida, 
-            taxonomia_sel, 
+            taxonomia_seleccionada, # Pasa el diccionario
             info_adicional
         )
         
         if resultado_generado_texto:
             st.success("¡Ítem generado con éxito! Puedes editarlo abajo.")
             try:
-                # --- LÓGICA DE INICIALIZACIÓN ---
+                # --- LÓGICA DE INICIALIZACIÓN (Sin cambios) ---
                 datos_obj = json.loads(resultado_generado_texto)
                 
                 # Guardar el objeto original por si acaso
@@ -260,18 +359,11 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
                 st.error("Error: La respuesta de la IA no fue un JSON válido.")
                 st.text(resultado_generado_texto) # Mostrar el texto crudo para depurar
                 st.session_state.show_editor = False
-    else:
-        st.warning("Por favor, sube una imagen primero.")
 
-# --- NUEVA SECCIÓN: Editor de Ítems ---
-# Esta sección solo aparece si show_editor es True
-# --- NUEVA SECCIÓN: Editor de Ítems (a 1 Columna) ---
-# Esta sección solo aparece si show_editor es True
+# --- Editor de Ítems y Descarga (Sin cambios) ---
 if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
     st.header("3. Edita el Ítem Generado")
-    
-    # --- Todos los campos se apilarán verticalmente ---
     
     st.text_area("Enunciado (Pregunta Espejo)", key="editable_pregunta", height=150)
     
@@ -291,13 +383,10 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.text_area("Justificación C", key="editable_just_c", height=100)
     st.text_area("Justificación D", key="editable_just_d", height=100)
 
-    # --- SECCIÓN DE DESCARGA (AHORA DEPENDE DE LOS DATOS EDITADOS) ---
+    # --- SECCIÓN DE DESCARGA ---
     st.divider()
     st.header("4. Descargar Resultados")
     
-    # --- LÓGICA DE RE-ENSAMBLE ---
-    # Re-construir el diccionario 'datos' a partir del session_state
-    # Esto asegura que los datos descargados sean los datos editados
     datos_editados = {
         "pregunta_espejo": st.session_state.editable_pregunta,
         "opciones": {
@@ -319,7 +408,6 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     col_word, col_excel = st.columns(2)
     
     with col_word:
-        # Pasar los datos editados a la función de creación
         archivo_word = crear_word(datos_editados)
         st.download_button(
             label="Descargar en Word (.docx)",
@@ -330,7 +418,6 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         )
         
     with col_excel:
-        # Pasar los datos editados a la función de creación
         archivo_excel = crear_excel(datos_editados)
         st.download_button(
             label="Descargar en Excel (.xlsx)",
