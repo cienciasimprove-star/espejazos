@@ -23,7 +23,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     """
     
     # 1. Inicializar el modelo
-    model = GenerativeModel("gemini-1.5-flash-001") 
+    model = GenerativeModel("gemini-2.5-flash-lite") 
     
     # 2. Procesar la imagen
     img_pil = Image.open(imagen_cargada)
@@ -121,7 +121,7 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
     y las reglas de calidad. Devuelve un reporte de auditoría en JSON.
     """
     
-    model = GenerativeModel("gemini-1.5-flash-001")
+    model = GenerativeModel("gemini-2.5-flash-lite")
     taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
 
     # 1. Diseño del Prompt (Auditor)
