@@ -11,6 +11,18 @@ from vertexai.generative_models import GenerativeModel, Part, Image as VertexIma
 import json
 import random # Necesario para la clave aleatoria
 
+# --- IMPORTACIÓN CLAVE ---
+# Importamos 'crear_grafico' (el renderizador) y no 'generar_grafico_desde_texto' (el que llama al LLM)
+try:
+    from graficos_plugins import crear_grafico
+    GRAFICOS_DISPONIBLES = True
+except ImportError:
+    st.error("Advertencia: No se encontró el archivo 'graficos_plugins.py'. La previsualización de gráficos no funcionará.")
+    GRAFICOS_DISPONIBLES = False
+    # Definir una función placeholder si falla la importación
+    def crear_grafico(*args, **kwargs):
+        return None
+
 # --- Configuración de Google Cloud (hacer al inicio) ---
 # Descomenta esta línea y configúrala con tu proyecto y región
 # vertexai.init(project="TU_PROYECTO_GCP", location="TU_REGION")
@@ -18,10 +30,12 @@ import random # Necesario para la clave aleatoria
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA) ---
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
-    GENERADOR: Genera el ítem Y los datos para un nuevo gráfico/tabla si es necesario.
+    GENERADOR: Genera el ítem, donde el enunciado Y/O las opciones pueden ser imágenes/tablas.
     """
     
+    # Modelo de Gemini (corregido al que usas)
     model = GenerativeModel("gemini-2.5-flash-lite") 
+    
     img_pil = Image.open(imagen_cargada)
     buffered = io.BytesIO()
     img_pil.save(buffered, format="PNG")
@@ -40,7 +54,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # 4. Diseño del Prompt (Generador)
+    # 4. Diseño del Prompt (Generador) - ¡ESTRUCTURA DE OPCIONES CAMBIADA!
     prompt_texto = f"""
     Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
     DEBES devolver un JSON válido.
@@ -48,7 +62,9 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     {seccion_feedback}
 
     **Shell Cognitivo (Pregunta Original):**
-    Analiza la estructura lógica y la "Tarea Cognitiva" de la pregunta en la IMAGEN ADJUNTA. Si la pregunta original usa una tabla o gráfico, tu ítem espejo también debería usar uno de un tipo similar pero con contenido nuevo.
+    Analiza la estructura lógica y la "Tarea Cognitiva" de la pregunta en la IMAGEN ADJUNTA.
+    - Si la pregunta original usa una tabla o gráfico, tu ítem espejo también debería usar uno.
+    - **¡IMPORTANTE!** Si las *opciones de respuesta* en la imagen original son gráficas o tablas, debes replicar esa estructura para las opciones del ítem espejo.
 
     **Taxonomía Requerida (Tu Guía):**
     {taxonomia_texto}
@@ -62,33 +78,20 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     --- CONSTRUCCIÓN DEL ÍTEM (Tu paso 2) ---
     Basado en tu análisis, construye el ítem.
     - ENUNCIADO: Debe ser claro y **NO** usar jerarquías ("más", "mejor", "principalmente").
-    - OPCIONES: 4 opciones (A, B, C, D).
     - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
     - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva.
-    - JUSTIFICACIONES:
-        - Clave: "Esta es la respuesta correcta porque..."
-        - Distractores: "El estudiante podría escoger esta opción porque… Sin embargo, esto es incorrecto porque…"
-
-    --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (¡NUEVO!) ---
-    Si el ítem espejo que creaste REQUIERE una tabla, gráfico o diagrama para funcionar, sigue estas reglas:
     
-    GRAFICO_NECESARIO: [Escribe "SÍ" o "NO"]
-    DESCRIPCION_GRAFICO_NUEVO: [Si es "NO", escribe [] (un array vacío). Si es "SÍ", proporciona una LISTA DE OBJETOS JSON VÁLIDOS que describan el gráfico, siguiendo esta estructura:]
+    --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (ENUNCIADO Y OPCIONES) ---
+    Tanto el enunciado ("descripcion_grafico_enunciado") como CADA opción ("opciones") pueden contener un gráfico.
+    Si el elemento (enunciado u opción) NO necesita un gráfico/tabla, usa "NO" y [].
+    Si SÍ necesita un gráfico, usa "SÍ" y proporciona el JSON de datos.
     
-    Ejemplo de formato para DESCRIPCION_GRAFICO_NUEVO si GRAFICO_NECESARIO es "SÍ":
+    Ejemplo de formato para un gráfico (tabla):
     [
       {{
-        "ubicacion": "enunciado",
         "tipo_elemento": "tabla",
-        "datos": {{
-          "columnas": ["Producto", "Precio 2023", "Precio 2024"],
-          "filas": [
-            ["Manzanas", 1.00, 1.20],
-            ["Bananas", 0.50, 0.55]
-          ]
-        }},
-        "configuracion": {{ "titulo": "Precios de Frutas" }},
-        "descripcion": "Una tabla que compara los precios de frutas entre 2023 y 2024."
+        "datos": {{ "columnas": ["X", "Y"], "filas": [[1, 2], [3, 4]] }},
+        "configuracion": {{ "titulo": "Ejemplo" }}
       }}
     ]
 
@@ -96,23 +99,39 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     Responde ÚNICAMENTE con el objeto JSON. No incluyas ```json.
     {{
       "pregunta_espejo": "Texto completo del enunciado/stem...",
-      "opciones": {{
-        "A": "Texto de la opción A",
-        "B": "Texto de la opción B",
-        "C": "Texto de la opción C",
-        "D": "Texto de la opción D"
-      }},
       "clave": "{clave_aleatoria}",
       "descripcion_imagen_original": "Descripción de la imagen que el usuario subió...",
       "justificacion_clave": "Razón por la que la clave es correcta...",
+      "grafico_necesario_enunciado": "SÍ" o "NO",
+      "descripcion_grafico_enunciado": [ ... (el JSON del gráfico del enunciado o []) ... ],
+      "opciones": {{
+        "A": {{
+          "texto": "Texto de la Opción A (o 'Ver gráfico A' si aplica)",
+          "grafico_necesario": "SÍ" o "NO",
+          "descripcion_grafico": [ ... (JSON del gráfico para la Opción A o []) ... ]
+        }},
+        "B": {{
+          "texto": "Texto de la Opción B",
+          "grafico_necesario": "NO",
+          "descripcion_grafico": []
+        }},
+        "C": {{
+          "texto": "Texto de la Opción C",
+          "grafico_necesario": "NO",
+          "descripcion_grafico": []
+        }},
+        "D": {{
+          "texto": "Texto de la Opción D",
+          "grafico_necesario": "NO",
+          "descripcion_grafico": []
+        }}
+      }},
       "justificaciones_distractores": [
         {{ "opcion": "A", "justificacion": "Justificación para A..." }},
         {{ "opcion": "B", "justificacion": "Justificación para B..." }},
         {{ "opcion": "C", "justificacion": "Justificación para C..." }},
         {{ "opcion": "D", "justificacion": "Justificación para D..." }}
-      ],
-      "grafico_necesario": "SÍ" o "NO",
-      "descripcion_grafico_nuevo": [ ... (el JSON del gráfico o un array vacío []) ... ]
+      ]
     }}
     """
 
@@ -133,9 +152,10 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
 # --- 2. FUNCIÓN DEL AUDITOR (ACTUALIZADA) ---
 def auditar_item_llm(item_json_texto, taxonomia_dict):
     """
-    AUDITOR: Audita el ítem Y la coherencia del nuevo gráfico generado.
+    AUDITOR: Audita el ítem Y la coherencia de los gráficos (enunciado Y opciones).
     """
     
+    # Modelo de Gemini (corregido al que usas)
     model = GenerativeModel("gemini-2.5-flash-lite")
     taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
 
@@ -143,18 +163,20 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
     Eres un auditor psicométrico experto y riguroso. Tu tarea es auditar el siguiente ítem (en JSON)
     contra la taxonomía y las reglas de estilo.
     
-    **Taxonomía de Referencia (Obligatoria):**
+    **Taxonomía de Referencia (ObligatorIA):**
     {taxonomia_texto}
 
     **Ítem Generado (JSON a Auditar):**
     {item_json_texto}
 
     --- CRITERIOS DE AUDITORÍA (Evalúa uno por uno) ---
-    1.  **Alineación con Taxonomía:** ¿El ítem (pregunta, opciones, clave) evalúa CLARAMENTE la Evidencia, Afirmación y Competencia de la taxonomía?
+    1.  **Alineación con Taxonomía:** ¿El ítem evalúa CLARAMENTE la Evidencia, Afirmación y Competencia?
     2.  **Estilo del Enunciado (No Jerarquización):** ¿El enunciado usa palabras prohibidas como "más", "mejor", "principalmente"? (RECHAZO automático).
     3.  **Calidad de Distractores:** ¿Las justificaciones de los distractores explican el *error* (ej. "El estudiante podría...")?
     4.  **Clave y Opciones:** ¿Hay 4 opciones? ¿La clave coincide con una opción?
-    5.  **Coherencia del Gráfico (¡NUEVO!):** Si "grafico_necesario" es "SÍ", ¿el contenido de "descripcion_grafico_nuevo" es un JSON válido y es *realmente necesario* y *coherente* con la pregunta? Si es "NO", ¿es correcto que no lo tenga?
+    5.  **Coherencia de Gráficos (¡ACTUALIZADO!):** - ¿Es coherente el "grafico_necesario_enunciado" con la pregunta?
+        - ¿Son coherentes los "grafico_necesario" DENTRO de cada opción?
+        - Si un gráfico existe, ¿es un JSON válido?
 
     --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
     Devuelve tu auditoría como un único objeto JSON. No uses ```json.
@@ -164,10 +186,10 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
         {{ "criterio": "2. Estilo (No Jerarquización)", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }},
         {{ "criterio": "3. Calidad de Distractores", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }},
         {{ "criterio": "4. Clave y Opciones", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }},
-        {{ "criterio": "5. Coherencia del Gráfico", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }}
+        {{ "criterio": "5. Coherencia de Gráficos", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }}
       ],
       "dictamen_final": "✅ CUMPLE" o "❌ RECHAZADO",
-      "observaciones_finales": "Si es RECHAZADO, explica aquí CLARAMENTE qué debe corregir el generador. (Ej: 'El enunciado usa la palabra 'principalmente'. O 'El gráfico es SÍ pero la pregunta no lo usa.')"
+      "observaciones_finales": "Si es RECHAZADO, explica aquí CLARAMENTE qué debe corregir el generador. (Ej: 'El enunciado usa la palabra 'principalmente'. O 'El gráfico de la opción C es SÍ pero no se proporcionó JSON.')"
     }}
     """
     
@@ -190,21 +212,28 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
 def crear_excel(datos_generados):
     data_rows = []
     data_rows.append({"Componente": "Pregunta Espejo", "Contenido": datos_generados.get("pregunta_espejo", "")})
+    
+    # Añadir info del gráfico del enunciado
+    data_rows.append({"Componente": "Gráfico Enunciado", "Contenido": datos_generados.get("grafico_necesario_enunciado", "NO")})
+    grafico_json_str = json.dumps(datos_generados.get("descripcion_grafico_enunciado", []), indent=2)
+    data_rows.append({"Componente": "Datos Gráfico Enunciado (JSON)", "Contenido": grafico_json_str})
+
     opciones = datos_generados.get("opciones", {})
-    for letra, texto in opciones.items():
-        data_rows.append({"Componente": f"Opción {letra}", "Contenido": texto})
+    for letra in ["A", "B", "C", "D"]:
+        opcion_obj = opciones.get(letra, {})
+        # Añadir texto de la opción
+        data_rows.append({"Componente": f"Opción {letra} - Texto", "Contenido": opcion_obj.get("texto", "")})
+        # Añadir info del gráfico de la opción
+        data_rows.append({"Componente": f"Opción {letra} - Gráfico", "Contenido": opcion_obj.get("grafico_necesario", "NO")})
+        grafico_json_str = json.dumps(opcion_obj.get("descripcion_grafico", []), indent=2)
+        data_rows.append({"Componente": f"Opción {letra} - Datos Gráfico (JSON)", "Contenido": grafico_json_str})
+
     data_rows.append({"Componente": "Clave", "Contenido": datos_generados.get("clave", "")})
     data_rows.append({"Componente": "Justificación Clave", "Contenido": datos_generados.get("justificacion_clave", "")})
     justificaciones = datos_generados.get("justificaciones_distractores", [])
     for just in justificaciones:
         data_rows.append({"Componente": f"Justificación {just.get('opcion')}", "Contenido": just.get('justificacion')})
     
-    # Añadir info del gráfico
-    data_rows.append({"Componente": "Gráfico Necesario", "Contenido": datos_generados.get("grafico_necesario", "NO")})
-    # Convertir el JSON del gráfico a string para el Excel
-    grafico_json_str = json.dumps(datos_generados.get("descripcion_grafico_nuevo", []), indent=2)
-    data_rows.append({"Componente": "Datos del Gráfico (JSON)", "Contenido": grafico_json_str})
-
     df = pd.DataFrame(data_rows)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -214,21 +243,30 @@ def crear_excel(datos_generados):
 def crear_word(datos_generados):
     document = Document()
     document.add_heading('Ítem Espejo Generado', level=1)
+    
     document.add_heading('Pregunta Espejo (Enunciado)', level=2)
     document.add_paragraph(datos_generados.get("pregunta_espejo", "N/A"))
     
-    # Añadir info del gráfico (si existe)
-    if datos_generados.get("grafico_necesario") == "SÍ":
-        document.add_heading('Datos del Gráfico (JSON)', level=3)
-        grafico_json_str = json.dumps(datos_generados.get("descripcion_grafico_nuevo", []), indent=2)
+    if datos_generados.get("grafico_necesario_enunciado") == "SÍ":
+        document.add_heading('Datos del Gráfico (Enunciado)', level=3)
+        grafico_json_str = json.dumps(datos_generados.get("descripcion_grafico_enunciado", []), indent=2)
         document.add_paragraph(grafico_json_str)
 
-    document.add_heading('Opciones', level=3)
+    document.add_heading('Opciones', level=2)
     opciones = datos_generados.get("opciones", {})
-    for letra, texto in opciones.items():
-        document.add_paragraph(f"**{letra}:** {texto}")
+    for letra in ["A", "B", "C", "D"]:
+        opcion_obj = opciones.get(letra, {})
+        document.add_heading(f"Opción {letra}", level=3)
+        document.add_paragraph(opcion_obj.get("texto", "N/A"))
+        
+        if opcion_obj.get("grafico_necesario") == "SÍ":
+            document.add_heading(f'Datos del Gráfico (Opción {letra})', level=4)
+            grafico_json_str = json.dumps(opcion_obj.get("descripcion_grafico", []), indent=2)
+            document.add_paragraph(grafico_json_str)
+
     document.add_heading('Clave', level=2)
     document.add_paragraph(datos_generados.get('clave', 'N/A'))
+    
     document.add_heading('Justificaciones', level=2)
     document.add_paragraph(f"**Justificación de la Clave:** {datos_generados.get('justificacion_clave', 'N/A')}")
     document.add_heading('Justificaciones de Distractores', level=3)
@@ -236,6 +274,7 @@ def crear_word(datos_generados):
     for just in justificaciones:
         if just.get('opcion') != datos_generados.get('clave'):
             document.add_paragraph(f"**Justificación {just.get('opcion')}:** {just.get('justificacion')}")
+    
     output = io.BytesIO()
     document.save(output)
     return output.getvalue()
@@ -258,7 +297,7 @@ with col1:
     if imagen_subida:
         st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
 
-# --- COLUMNA 2 (Lógica de Filtros Bifurcada) ---
+# --- COLUMNA 2 (Lógica de Filtros Bifurcada y CORREGIDA) ---
 with col2:
     st.header("2. Configurar Generación")
     
@@ -294,17 +333,18 @@ with col2:
                 # --- Cascada 1: (Hoja 1 - Estructura) ---
                 st.subheader("Taxonomía (Hoja 1 - Estructura)")
                 df_area_h1 = df_grado_h1[df_grado_h1['Área'] == area_sel]
-                componentes1 = df_area_h1['Componente1'].unique()
+                # --- CORRECCIÓN DE BUG: Usa 'Componente' ---
+                componentes1 = df_area_h1['Componente'].unique() 
                 comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) 
 
-                df_comp1 = df_area_h1[df_area_h1['Componente1'] == comp1_sel]
+                df_comp1 = df_area_h1[df_area_h1['Componente'] == comp1_sel]
                 competencias = df_comp1['Competencia'].unique()
                 competen_sel = st.selectbox("Competencia", options=competencias)
 
                 df_competencia = df_comp1[df_comp1['Competencia'] == competen_sel]
                 
                 if area_sel == 'Ciencias Naturales': 
-                    df_afirmacion_base = df_competencia[df_competencia['Componente1'] == comp1_sel]
+                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp1_sel]
                 else:
                     df_afirmacion_base = df_competencia
                     
@@ -321,10 +361,11 @@ with col2:
                     (df2['Grado'] == grado_sel) & 
                     (df2['Área'] == area_sel) # Con tilde
                 ]
-                componentes2 = df_area_h2['Componente2'].unique()
+                # --- CORRECCIÓN DE BUG: Usa 'Componente' ---
+                componentes2 = df_area_h2['Componente'].unique()
                 comp2_sel = st.selectbox("Componente (Temática)", options=componentes2)
 
-                df_comp2 = df_area_h2[df_area_h2['Componente2'] == comp2_sel]
+                df_comp2 = df_area_h2[df_area_h2['Componente'] == comp2_sel]
                 
                 refs = df_comp2['Ref. Temática'].unique() if not df_comp2.empty else ["N/A"] # Con tilde y espacio
                 ref_sel = st.selectbox("Ref. Temática", options=refs) # Con tilde y espacio
@@ -358,8 +399,8 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
         taxonomia_seleccionada = {
             "Grado": grado_sel,
             "Área": area_sel,
-            "Componente1_Estructura": comp1_sel,
-            "Componente2_Tematica": comp2_sel,
+            "Componente_Estructura": comp1_sel, # Nombre corregido
+            "Componente_Tematica": comp2_sel,  # Nombre corregido
             "Ref. Temática": ref_sel,
             "Competencia": competen_sel,
             "Afirmación": afirm_sel,
@@ -395,6 +436,7 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                     continue 
 
                 try:
+                    # --- FIX: Asegurarse de parsear la respuesta del auditor ---
                     audit_data = json.loads(audit_json_str)
                     
                     if audit_data.get("dictamen_final") == "✅ CUMPLE":
@@ -407,7 +449,7 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                         st.expander(f"Detalles del Rechazo (Intento {intento_actual})").json(audit_data)
                 
                 except json.JSONDecodeError:
-                    status.update(label="Error al leer respuesta del auditor.", state="error")
+                    st.error(f"Error al leer respuesta JSON del auditor: {audit_json_str}")
                     feedback_auditor = "La respuesta del auditor no fue un JSON válido."
 
             if item_final_json is None:
@@ -417,30 +459,39 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
         if item_final_json:
             st.success("¡Ítem generado y auditado con éxito! Puedes editarlo abajo.")
             try:
+                # --- FIX: Asegurarse de parsear la respuesta del generador ---
                 datos_obj = json.loads(item_final_json)
                 st.session_state['resultado_json_obj'] = datos_obj
                 
-                # --- LÓGICA DE INICIALIZACIÓN (ACTUALIZADA) ---
+                # --- LÓGICA DE INICIALIZACIÓN (ACTUALIZADA para nuevo JSON) ---
                 st.session_state.editable_pregunta = datos_obj.get("pregunta_espejo", "")
-                opciones = datos_obj.get("opciones", {})
-                st.session_state.editable_opcion_a = opciones.get("A", "")
-                st.session_state.editable_opcion_b = opciones.get("B", "")
-                st.session_state.editable_opcion_c = opciones.get("C", "")
-                st.session_state.editable_opcion_d = opciones.get("D", "")
                 st.session_state.editable_clave = datos_obj.get("clave", "")
                 st.session_state.editable_just_clave = datos_obj.get("justificacion_clave", "")
+
+                # Gráfico del Enunciado
+                st.session_state.editable_grafico_nec_enunciado = datos_obj.get("grafico_necesario_enunciado", "NO")
+                grafico_data_enunciado = datos_obj.get("descripcion_grafico_enunciado", [])
+                st.session_state.editable_grafico_json_enunciado = json.dumps(grafico_data_enunciado, indent=2)
+
+                # Opciones (A, B, C, D)
+                opciones = datos_obj.get("opciones", {})
+                for letra in ["A", "B", "C", "D"]:
+                    # --- FIX: Corregir la inicialización de opciones ---
+                    # El JSON antiguo era "A": "Texto". El nuevo es "A": {"texto": "..."}
+                    opcion_obj = opciones.get(letra, {}) # Obtener el objeto de la opción
+                    
+                    st.session_state[f"editable_opcion_{letra.lower()}_texto"] = opcion_obj.get("texto", "")
+                    st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"] = opcion_obj.get("grafico_necesario", "NO")
+                    grafico_data = opcion_obj.get("descripcion_grafico", [])
+                    st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = json.dumps(grafico_data, indent=2)
+
+                # Justificaciones
                 justifs_list = datos_obj.get("justificaciones_distractores", [])
                 justifs_map = {j.get('opcion'): j.get('justificacion') for j in justifs_list}
                 st.session_state.editable_just_a = justifs_map.get("A", "N/A")
                 st.session_state.editable_just_b = justifs_map.get("B", "N/A")
                 st.session_state.editable_just_c = justifs_map.get("C", "N/A")
                 st.session_state.editable_just_d = justifs_map.get("D", "N/A")
-                
-                # --- INICIALIZACIÓN DEL GRÁFICO (NUEVO) ---
-                st.session_state.editable_grafico_nec = datos_obj.get("grafico_necesario", "NO")
-                # Convertir la lista de objetos JSON a un string JSON formateado para el text_area
-                grafico_data = datos_obj.get("descripcion_grafico_nuevo", [])
-                st.session_state.editable_grafico_json = json.dumps(grafico_data, indent=2)
                 
                 st.session_state.show_editor = True
                 
@@ -453,26 +504,84 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
     st.header("3. Edita el Ítem Generado")
     
-    st.text_area("Enunciado (Pregunta Espejo)", key="editable_pregunta", height=150)
-    
-    # --- CAMPO DE EDICIÓN DEL GRÁFICO (NUEVO) ---
-    st.subheader("Gráfico / Tabla del Ítem Espejo")
+    # --- ENUNCIADO Y GRÁFICO DEL ENUNCIADO ---
+    st.subheader("Enunciado")
+    st.text_area("Texto del Enunciado", key="editable_pregunta", height=150)
     st.selectbox(
-        "¿Este ítem necesita un gráfico/tabla?", 
+        "¿Enunciado necesita un gráfico/tabla?", 
         options=["NO", "SÍ"], 
-        key="editable_grafico_nec"
+        key="editable_grafico_nec_enunciado"
     )
     st.text_area(
-        "Datos del Gráfico (Editar como JSON)", 
-        key="editable_grafico_json", 
-        height=200
+        "Datos del Gráfico (Enunciado)", 
+        key="editable_grafico_json_enunciado", 
+        height=150
     )
     
+    # --- PREVISUALIZACIÓN (Enunciado) ---
+    if st.session_state.editable_grafico_nec_enunciado == "SÍ" and GRAFICOS_DISPONIBLES:
+        with st.expander("Previsualizar Gráfico del Enunciado"):
+            try:
+                json_data = json.loads(st.session_state.editable_grafico_json_enunciado)
+                if json_data and isinstance(json_data, list):
+                    spec = json_data[0] # Tomar el primer gráfico de la lista
+                    
+                    # --- LLAMADA DIRECTA AL RENDERIZADOR ---
+                    buffer_imagen = crear_grafico(
+                        tipo_grafico=spec.get("tipo_elemento"),
+                        datos=spec.get("datos", {}),
+                        configuracion=spec.get("configuracion", {})
+                    )
+                    if buffer_imagen:
+                        st.image(buffer_imagen, caption="Previsualización")
+                    else:
+                        st.error("No se pudo renderizar el gráfico. Revisa el JSON.")
+
+            except json.JSONDecodeError:
+                st.error("Error en el formato JSON del gráfico del enunciado.")
+            except Exception as e:
+                st.error(f"Error al intentar renderizar el gráfico: {e}")
+
+    
+    # --- OPCIONES Y SUS GRÁFICOS ---
     st.subheader("Opciones")
-    st.text_input("Opción A", key="editable_opcion_a")
-    st.text_input("Opción B", key="editable_opcion_b")
-    st.text_input("Opción C", key="editable_opcion_c")
-    st.text_input("Opción D", key="editable_opcion_d")
+    
+    for letra in ["A", "B", "C", "D"]:
+        st.markdown(f"--- \n**Opción {letra}**")
+        st.text_input(f"Texto Opción {letra}", key=f"editable_opcion_{letra.lower()}_texto")
+        st.selectbox(
+            f"¿Gráfico en Opción {letra}?", 
+            options=["NO", "SÍ"], 
+            key=f"editable_opcion_{letra.lower()}_grafico_nec"
+        )
+        st.text_area(
+            f"Datos Gráfico Opción {letra} (JSON)", 
+            key=f"editable_opcion_{letra.lower()}_grafico_json", 
+            height=100
+        )
+        
+        # --- PREVISUALIZACIÓN (Opciones) ---
+        if st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"] == "SÍ" and GRAFICOS_DISPONIBLES:
+            with st.expander(f"Previsualizar Gráfico de Opción {letra}"):
+                try:
+                    json_data = json.loads(st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"])
+                    if json_data and isinstance(json_data, list):
+                        spec = json_data[0]
+                        
+                        # --- LLAMADA DIRECTA AL RENDERIZADOR ---
+                        buffer_imagen = crear_grafico(
+                            tipo_grafico=spec.get("tipo_elemento"),
+                            datos=spec.get("datos", {}),
+                            configuracion=spec.get("configuracion", {})
+                        )
+                        if buffer_imagen:
+                            st.image(buffer_imagen, caption="Previsualización")
+                        else:
+                            st.error("No se pudo renderizar el gráfico. Revisa el JSON.")
+                except json.JSONDecodeError:
+                    st.error(f"Error en el formato JSON del gráfico de la Opción {letra}.")
+                except Exception as e:
+                    st.error(f"Error al intentar renderizar el gráfico: {e}")
         
     st.subheader("Clave")
     st.text_input("Clave (Respuesta Correcta)", key="editable_clave")
@@ -491,30 +600,39 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     # --- LÓGICA DE RE-ENSAMBLE (ACTUALIZADA) ---
     datos_editados = {
         "pregunta_espejo": st.session_state.editable_pregunta,
-        "opciones": {
-            "A": st.session_state.editable_opcion_a,
-            "B": st.session_state.editable_opcion_b,
-            "C": st.session_state.editable_opcion_c,
-            "D": st.session_state.editable_opcion_d,
-        },
         "clave": st.session_state.editable_clave,
         "justificacion_clave": st.session_state.editable_just_clave,
+        "grafico_necesario_enunciado": st.session_state.editable_grafico_nec_enunciado,
+        "opciones": {},
         "justificaciones_distractores": [
             {"opcion": "A", "justificacion": st.session_state.editable_just_a},
             {"opcion": "B", "justificacion": st.session_state.editable_just_b},
             {"opcion": "C", "justificacion": st.session_state.editable_just_c},
             {"opcion": "D", "justificacion": st.session_state.editable_just_d},
-        ],
-        "grafico_necesario": st.session_state.editable_grafico_nec,
+        ]
     }
     
-    # Intentar parsear el JSON del gráfico, si falla, guardar como texto
+    # Re-ensamble del gráfico del enunciado
     try:
-        datos_editados["descripcion_grafico_nuevo"] = json.loads(st.session_state.editable_grafico_json)
+        datos_editados["descripcion_grafico_enunciado"] = json.loads(st.session_state.editable_grafico_json_enunciado)
     except json.JSONDecodeError:
-        st.error("El JSON del gráfico tiene un error de formato, se guardará como texto.")
-        datos_editados["descripcion_grafico_nuevo"] = st.session_state.editable_grafico_json
+        st.error("El JSON del gráfico del enunciado tiene un error de formato, se guardará como texto.")
+        datos_editados["descripcion_grafico_enunciado"] = st.session_state.editable_grafico_json_enunciado
     
+    # Re-ensamble de las opciones (A, B, C, D)
+    for letra in ["A", "B", "C", "D"]:
+        opcion_data = {
+            "texto": st.session_state[f"editable_opcion_{letra.lower()}_texto"],
+            "grafico_necesario": st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"]
+        }
+        try:
+            opcion_data["descripcion_grafico"] = json.loads(st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"])
+        except json.JSONDecodeError:
+            opcion_data["descripcion_grafico"] = st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"]
+            st.error(f"El JSON del gráfico de la Opción {letra} tiene un error, se guardará como texto.")
+        
+        datos_editados["opciones"][letra] = opcion_data
+
     
     col_word, col_excel = st.columns(2)
     
