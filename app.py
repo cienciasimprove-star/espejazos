@@ -175,15 +175,15 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
 
 def crear_excel(datos_generados):
     data_rows = []
-    data_rows.append({"Componente": "Pregunta Espejo", "Contenido": datos_generados.get("pregunta_espejo", "")})
+    data_rows.append({"Componente1": "Pregunta Espejo", "Contenido": datos_generados.get("pregunta_espejo", "")})
     opciones = datos_generados.get("opciones", {})
     for letra, texto in opciones.items():
-        data_rows.append({"Componente": f"Opción {letra}", "Contenido": texto})
-    data_rows.append({"Componente": "Clave", "Contenido": datos_generados.get("clave", "")})
-    data_rows.append({"Componente": "Justificación Clave", "Contenido": datos_generados.get("justificacion_clave", "")})
+        data_rows.append({"Componente1": f"Opción {letra}", "Contenido": texto})
+    data_rows.append({"Componente1": "Clave", "Contenido": datos_generados.get("clave", "")})
+    data_rows.append({"Componente1": "Justificación Clave", "Contenido": datos_generados.get("justificacion_clave", "")})
     justificaciones = datos_generados.get("justificaciones_distractores", [])
     for just in justificaciones:
-        data_rows.append({"Componente": f"Justificación {just.get('opcion')}", "Contenido": just.get('justificacion')})
+        data_rows.append({"Componente1": f"Justificación {just.get('opcion')}", "Contenido": just.get('justificacion')})
     df = pd.DataFrame(data_rows)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -272,10 +272,10 @@ with col2:
                 # --- Cascada 1: (Hoja 1 - Estructura) ---
                 st.subheader("Taxonomía (Hoja 1 - Estructura)")
                 df_area_h1 = df_grado_h1[df_grado_h1['Área'] == area_sel]
-                componentes1 = df_area_h1['Componente'].unique()
+                componentes1 = df_area_h1['Componente1'].unique()
                 comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) 
 
-                df_comp1 = df_area_h1[df_area_h1['Componente'] == comp1_sel]
+                df_comp1 = df_area_h1[df_area_h1['Componente1'] == comp1_sel]
                 competencias = df_comp1['Competencia'].unique()
                 competen_sel = st.selectbox("Competencia", options=competencias)
 
@@ -283,7 +283,7 @@ with col2:
                 
                 # Lógica de Ciencias Naturales (usa comp1_sel)
                 if area_sel == 'Ciencias Naturales': 
-                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp1_sel]
+                    df_afirmacion_base = df_competencia[df_competencia['Componente1'] == comp1_sel]
                 else:
                     df_afirmacion_base = df_competencia
                     
@@ -300,10 +300,10 @@ with col2:
                     (df2['Grado'] == grado_sel) & 
                     (df2['Área'] == area_sel) # Con tilde
                 ]
-                componentes2 = df_area_h2['Componente'].unique()
+                componentes2 = df_area_h2['Componente2'].unique()
                 comp2_sel = st.selectbox("Componente (Temática)", options=componentes2)
 
-                df_comp2 = df_area_h2[df_area_h2['Componente'] == comp2_sel]
+                df_comp2 = df_area_h2[df_area_h2['Componente2'] == comp2_sel]
                 
                 refs = df_comp2['Ref. Temática'].unique() if not df_comp2.empty else ["N/A"] # Con tilde y espacio
                 ref_sel = st.selectbox("Ref. Temática", options=refs) # Con tilde y espacio
