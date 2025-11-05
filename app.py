@@ -14,8 +14,8 @@ import json
 # Descomenta esta línea y configúrala con tu proyecto y región
 # vertexai.init(project="tu-proyecto-gcp", location="tu-region")
 
-# --- FUNCIÓN DE IA (MODIFICADA) ---
-# Ahora acepta un diccionario 'taxonomia_dict' en lugar de un string
+# --- FUNCIÓN DE IA (CORREGIDA) ---
+# Ahora usa los nombres de columna correctos (ej. 'Ref. Temática')
 def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     """
     Llama a Vertex AI (Gemini) para analizar la imagen y el texto
@@ -34,10 +34,10 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     vertex_img = VertexImage.from_bytes(img_bytes)
 
     # 3. Construir el string de taxonomía para el prompt
-    # a partir del diccionario
+    #    (usando los nombres de columna correctos CON TILDES/ESPACIOS)
     taxonomia_texto = f"""
         * Grado: {taxonomia_dict.get('Grado', 'N/A')}
-        * Área: {taxonomia_dict.get('Area', 'N/A')}
+        * Área: {taxonomia_dict.get('Área', 'N/A')}
         * Componente: {taxonomia_dict.get('Componente', 'N/A')}
         * Ref. Temática: {taxonomia_dict.get('Ref. Temática', 'N/A')}
         * Competencia: {taxonomia_dict.get('Competencia', 'N/A')}
@@ -45,7 +45,7 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
         * Evidencia: {taxonomia_dict.get('Evidencia', 'N/A')}
     """
 
-    # 3. Diseño del Prompt (ACTUALIZADO CON NUEVAS REGLAS)
+    # 3. Diseño del Prompt
     prompt_texto = f"""
     Eres un experto en psicometría y diseño de ítems educativos.
     Tu tarea es analizar una pregunta de selección múltiple (presentada como imagen)
@@ -66,34 +66,28 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
 
     **1. Generar Pregunta Espejo (Enunciado):**
     * Crea una nueva pregunta que mantenga la misma estructura cognitiva (el 'shell') que la pregunta original, pero utiliza un contenido temático diferente.
-    * Asegúrate de que la dificultad y la habilidad medida (la Tarea Cognitiva) sean equivalentes.
     * **CRÍTICO:** Escribe **únicamente el enunciado** o 'stem' de la pregunta. NO incluyas las opciones (A, B, C, D) en este campo.
-    * Formula una pregunta clara, directa, sin ambigüedades ni tecnicismos innecesarios.
-    * **¡INSTRUCCIÓN CRÍTICA DE ESTILO!** Evita terminantemente formular preguntas que pidan al estudiante comparar o jerarquizar opciones. **NO USES** frases como "¿cuál es la opción más...", "¿cuál es el mejor...", "¿cuál describe principalmente...?".
-    * En su lugar, formula preguntas directas como: "**¿Cuál es la causa de...?**", "**¿Qué conclusión se deriva de...?**".
-    * Si utilizas negaciones, resáltalas en MAYÚSCULAS Y NEGRITA (por ejemplo: **NO ES**, **EXCEPTO**).
+    * Formula preguntas directas como: "**¿Cuál es la causa de...?**", "**¿Qué conclusión se deriva de...?**".
+    * Evita preguntas de jerarquía (ej. "**¿cuál es la opción más...**").
 
     **2. Generar Opciones de Respuesta:**
     * Escribe exactamente cuatro opciones (A, B, C y D).
-    * **Opción Correcta**: Debe ser la única conclusión válida tras ejecutar correctamente la Tarea Cognitiva (el 'shell').
-    * **Distractores (Incorrectos)**: Deben ser plausibles y diseñados a partir de errores típicos en la ejecución de la Tarea Cognitiva (Ej: un distractor podría ser el resultado de aplicar un proceso cognitivo inferior, como simplemente recordar un dato, en lugar de analizarlo).
-    * Las respuestas deben tener una estructura gramatical y longitud similares.
-    * No utilices fórmulas vagas como “ninguna de las anteriores” o “todas las anteriores”.
+    * **Opción Correcta**: Debe ser la única conclusión válida tras ejecutar correctamente la Tarea Cognitiva.
+    * **Distractores (Incorrectos)**: Deben ser plausibles y diseñados a partir de errores típicos en la ejecución de la Tarea Cognitiva.
 
     **3. Descripción de Imagen Original:**
     * Si la pregunta original usaba una imagen, genera una descripción textual detallada de esa imagen. Si no hay imagen, indica "N/A".
 
     **4. Justificaciones (Formato Estricto):**
-    * Para la NUEVA pregunta espejo que generaste:
-    * **Justificación de la Clave:** Explica detalladamente el razonamiento o proceso cognitivo que lleva a la respuesta correcta. NO justifiques por descarte.
-    * **Justificaciones de Distractores:** Para CADA opción (incluida la correcta, para el mapeo), sigue este formato:
-        * Si la opción es la clave: "Esta es la respuesta correcta porque..." (repites la justificación de la clave).
-        * Si la opción es un distractor: "El estudiante podría escoger esta opción porque… Sin embargo, esto es incorrecto porque…"
+    * **Justificación de la Clave:** Explica el razonamiento que lleva a la respuesta correcta.
+    * **Justificaciones de Distractores:** Para CADA opción, sigue este formato:
+        * Si es la clave: "Esta es la respuesta correcta porque..."
+        * Si es un distractor: "El estudiante podría escoger esta opción porque… Sin embargo, esto es incorrecto porque…"
 
     --- FORMATO DE SALIDA OBLIGATORIO (JSON) ---
-    Responde ÚNICAMENTE con un objeto JSON válido con la siguiente estructura (esta estructura es fija para que la aplicación funcione):
+    Responde ÚNICAMENTE con un objeto JSON válido con la siguiente estructura:
     {{
-      "pregunta_espejo": "Texto completo del enunciado/stem de la nueva pregunta...",
+      "pregunta_espejo": "Texto completo del enunciado/stem...",
       "opciones": {{
         "A": "Texto de la opción A",
         "B": "Texto de la opción B",
@@ -102,12 +96,12 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
       }},
       "clave": "A",
       "descripcion_imagen_original": "Descripción de la imagen en la pregunta de entrada...",
-      "justificacion_clave": "Razón por la que la clave es correcta (sigue el formato estricto)...",
+      "justificacion_clave": "Razón por la que la clave es correcta...",
       "justificaciones_distractores": [
-        {{ "opcion": "A", "justificacion": "Justificación para A (sigue el formato estricto)..." }},
-        {{ "opcion": "B", "justificacion": "Justificación para B (sigue el formato estricto)..." }},
-        {{ "opcion": "C", "justificacion": "Justificación para C (sigue el formato estricto)..." }},
-        {{ "opcion": "D", "justificacion": "Justificación para D (sigue el formato estricto)..." }}
+        {{ "opcion": "A", "justificacion": "Justificación para A..." }},
+        {{ "opcion": "B", "justificacion": "Justificación para B..." }},
+        {{ "opcion": "C", "justificacion": "Justificación para C..." }},
+        {{ "opcion": "D", "justificacion": "Justificación para D..." }}
       ]
     }}
     """
@@ -117,10 +111,7 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     
     try:
         response = model.generate_content([vertex_img, prompt_texto])
-        
-        # Es crucial limpiar el 'markdown' que a veces añade el modelo
         respuesta_texto = response.text.strip().replace("```json", "").replace("```", "")
-        
         return respuesta_texto 
 
     except Exception as e:
@@ -133,58 +124,40 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
 # --- (Sin cambios) ---
 
 def crear_excel(datos_generados):
-    # 'datos_generados' es el diccionario con los datos (posiblemente editados)
-    
-    # Crear una lista de filas para el DataFrame
     data_rows = []
-    
     data_rows.append({"Componente": "Pregunta Espejo", "Contenido": datos_generados.get("pregunta_espejo", "")})
-    
     opciones = datos_generados.get("opciones", {})
     for letra, texto in opciones.items():
         data_rows.append({"Componente": f"Opción {letra}", "Contenido": texto})
-        
     data_rows.append({"Componente": "Clave", "Contenido": datos_generados.get("clave", "")})
     data_rows.append({"Componente": "Justificación Clave", "Contenido": datos_generados.get("justificacion_clave", "")})
-    
     justificaciones = datos_generados.get("justificaciones_distractores", [])
     for just in justificaciones:
         data_rows.append({"Componente": f"Justificación {just.get('opcion')}", "Contenido": just.get('justificacion')})
-
     df = pd.DataFrame(data_rows)
-    
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Item Generado')
-    
     return output.getvalue()
 
 def crear_word(datos_generados):
-    # 'datos_generados' es el diccionario con los datos (posiblemente editados)
     document = Document()
     document.add_heading('Ítem Espejo Generado', level=1)
-    
     document.add_heading('Pregunta Espejo (Enunciado)', level=2)
     document.add_paragraph(datos_generados.get("pregunta_espejo", "N/A"))
-    
     document.add_heading('Opciones', level=3)
     opciones = datos_generados.get("opciones", {})
     for letra, texto in opciones.items():
         document.add_paragraph(f"**{letra}:** {texto}")
-
     document.add_heading('Clave', level=2)
     document.add_paragraph(datos_generados.get('clave', 'N/A'))
-    
     document.add_heading('Justificaciones', level=2)
     document.add_paragraph(f"**Justificación de la Clave:** {datos_generados.get('justificacion_clave', 'N/A')}")
-    
     document.add_heading('Justificaciones de Distractores', level=3)
     justificaciones = datos_generados.get("justificaciones_distractores", [])
     for just in justificaciones:
-        # No justificar la clave dos veces
         if just.get('opcion') != datos_generados.get('clave'):
             document.add_paragraph(f"**Justificación {just.get('opcion')}:** {just.get('justificacion')}")
-    
     output = io.BytesIO()
     document.save(output)
     return output.getvalue()
@@ -192,7 +165,7 @@ def crear_word(datos_generados):
 # --- Interfaz de Streamlit ---
 
 st.set_page_config(layout="wide")
-st.title("🤖 Generador de Ítems Espejo (Basado en Shells Cognitivos)")
+st.title("🤖 Generador de Ítemes Espejo (Basado en Shells Cognitivos)")
 
 # --- Columnas para la entrada ---
 col1, col2 = st.columns(2)
@@ -207,12 +180,12 @@ with col1:
     if imagen_subida:
         st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
 
-# --- COLUMNA 2 (MODIFICADA) ---
+# --- COLUMNA 2 (CORREGIDA) ---
 with col2:
     st.header("2. Configurar Generación")
     
-    # --- 1. Carga del Excel ---
-    excel_file = st.file_uploader("Cargar Excel de Taxonomía", type=['xlsx'])
+    # --- 1. Carga del Excel (CORREGIDO) ---
+    excel_file = st.file_uploader("Cargar Excel de Taxonomía (un solo .xlsx)", type=['xlsx'])
     
     # Variables para almacenar las selecciones
     grado_sel = None
@@ -223,65 +196,86 @@ with col2:
     afirm_sel = None
     evid_sel = None
     
-    # --- 2. Lógica de Filtros en Cascada ---
+    # --- 2. Lógica de Filtros en Cascada (CORREGIDA) ---
     if excel_file is not None:
         try:
-            # Cargar hojas en el estado de la sesión para evitar recargas
+            # Cargar hojas en el estado de la sesión
+            # Se corrige la lógica de carga
             if 'df1' not in st.session_state or 'df2' not in st.session_state:
+                # --- MODIFICACIÓN CLAVE: Leer hojas por posición ---
                 data = pd.read_excel(excel_file, sheet_name=None)
-                st.session_state.df1 = data['Hoja 1']
-                st.session_state.df2 = data['Hoja 2']
-            
-            df1 = st.session_state.df1
-            df2 = st.session_state.df2
-
-            # --- Filtro 1: Grado ---
-            grados = df1['Grado'].unique()
-            grado_sel = st.selectbox("Grado", options=grados)
-
-            # --- Filtro 2: Area ---
-            df_grado = df1[df1['Grado'] == grado_sel]
-            areas = df_grado['Area'].unique()
-            area_sel = st.selectbox("Area", options=areas)
-
-            # --- Filtro 3: Componente ---
-            df_area = df_grado[df_grado['Area'] == area_sel]
-            componentes = df_area['Componente'].unique()
-            comp_sel = st.selectbox("Componente", options=componentes)
-
-            # --- Filtro 4: Ref. Temática (de Hoja 2) ---
-            df_ref = df2[
-                (df2['Grado'] == grado_sel) & 
-                (df2['Area'] == area_sel) & 
-                (df2['Componente'] == comp_sel)
-            ]
-            refs = df_ref['Ref. Temática'].unique()
-            ref_sel = st.selectbox("Ref. Temática", options=refs)
-
-            # --- Filtro 5: Competencia ---
-            # (Depende de Grado y Area)
-            competencias = df_area['Competencia'].unique()
-            competen_sel = st.selectbox("Competencia", options=competencias)
-
-            # --- Filtro 6: Afirmación (con lógica especial) ---
-            df_competencia = df_area[df_area['Competencia'] == competen_sel]
-            
-            if area_sel == 'Ciencias Naturales':
-                # Filtro adicional por Componente para Ciencias
-                df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp_sel]
-            else:
-                df_afirmacion_base = df_competencia
+                sheet_names = list(data.keys())
                 
-            afirmaciones = df_afirmacion_base['Afirmación'].unique()
-            afirm_sel = st.selectbox("Afirmación", options=afirmaciones)
+                if len(sheet_names) < 2:
+                    st.error("Error: El archivo Excel debe tener al menos dos hojas.")
+                    excel_file = None # Detener
+                else:
+                    # Asumir que la primera es Hoja 1 y la segunda es Hoja 2
+                    st.session_state.df1 = data[sheet_names[0]]
+                    st.session_state.df2 = data[sheet_names[1]]
+                    st.success(f"Éxito: Cargadas hojas '{sheet_names[0]}' y '{sheet_names[1]}'.")
+            
+            # Solo continuar si los dataframes están cargados
+            if 'df1' in st.session_state:
+                df1 = st.session_state.df1
+                df2 = st.session_state.df2
 
-            # --- Filtro 7: Evidencia ---
-            df_afirmacion = df_afirmacion_base[df_afirmacion_base['Afirmación'] == afirm_sel]
-            evidencias = df_afirmacion['Evidencia'].unique()
-            evid_sel = st.selectbox("Evidencia", options=evidencias)
+                # --- Filtro 1: Grado ---
+                # (Se asume que la columna 'Grado' existe en df1)
+                grados = df1['Grado'].unique()
+                grado_sel = st.selectbox("Grado", options=grados)
 
+                # --- Filtro 2: Area (CON TILDE) ---
+                df_grado = df1[df1['Grado'] == grado_sel]
+                areas = df_grado['Área'].unique() # <-- CORREGIDO
+                area_sel = st.selectbox("Area", options=areas)
+
+                # --- Filtro 3: Componente (CON TILDE EN FILTRO) ---
+                df_area = df_grado[df_grado['Área'] == area_sel] # <-- CORREGIDO
+                componentes = df_area['Componente'].unique()
+                comp_sel = st.selectbox("Componente", options=componentes)
+
+                # --- Filtro 4: Ref. Temática (CORREGIDO) ---
+                df_ref = df2[
+                    (df2['Grado'] == grado_sel) & 
+                    (df2['Área'] == area_sel) & # <-- CORREGIDO
+                    (df2['Componente'] == comp_sel)
+                ]
+                # Manejar el caso de que no haya referencias
+                if not df_ref.empty:
+                    refs = df_ref['Ref. Temática'].unique() # <-- CORREGIDO
+                else:
+                    refs = ["N/A"]
+                ref_sel = st.selectbox("Ref. Temática", options=refs)
+
+                # --- Filtro 5: Competencia ---
+                competencias = df_area['Competencia'].unique()
+                competen_sel = st.selectbox("Competencia", options=competencias)
+
+                # --- Filtro 6: Afirmación (con lógica especial) ---
+                df_competencia = df_area[df_area['Competencia'] == competen_sel]
+                
+                # Asegúrate de que el nombre 'Ciencias Naturales' sea exacto
+                if area_sel == 'Ciencias Naturales': 
+                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp_sel]
+                else:
+                    df_afirmacion_base = df_competencia
+                    
+                afirmaciones = df_afirmacion_base['Afirmación'].unique()
+                afirm_sel = st.selectbox("Afirmación", options=afirmaciones)
+
+                # --- Filtro 7: Evidencia ---
+                df_afirmacion = df_afirmacion_base[df_afirmacion_base['Afirmación'] == afirm_sel]
+                evidencias = df_afirmacion['Evidencia'].unique()
+                evid_sel = st.selectbox("Evidencia", options=evidencias)
+
+        except KeyError as e:
+            st.error(f"Error de Columna: No se encontró la columna {e}. Revisa que los nombres en el Excel coincidan exactamente (incluyendo tildes y mayúsculas).")
+            st.error(f"Columnas Hoja 1: {list(st.session_state.df1.columns)}")
+            st.error(f"Columnas Hoja 2: {list(st.session_state.df2.columns)}")
+            excel_file = None # Resetea para evitar errores
         except Exception as e:
-            st.error(f"Error al procesar el Excel. Asegúrate que 'Hoja 1' y 'Hoja 2' existan y tengan las columnas correctas. Detalle: {e}")
+            st.error(f"Error inesperado al procesar el Excel. Detalle: {e}")
             excel_file = None # Resetea para evitar errores
     
     # --- 3. Info Adicional (como estaba) ---
@@ -291,7 +285,7 @@ with col2:
         placeholder="Ej: 'Usar el tema de fotosíntesis', 'Enfocar en estudiantes de grado 10'"
     )
 
-# --- Botón de Generación (MODIFICADO) ---
+# --- Botón de Generación (CORREGIDO) ---
 st.divider()
 if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primary"):
     
@@ -301,15 +295,15 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
     elif excel_file is None:
         st.warning("Por favor, carga el archivo Excel de taxonomía.")
     elif evid_sel is None: # Si el último filtro no está seteado, los demás tampoco
-        st.warning("Error en los filtros de taxonomía. Revisa el Excel.")
+        st.warning("Error en los filtros de taxonomía. Revisa el Excel y las selecciones.")
     
     else:
-        # --- Empaquetar la taxonomía seleccionada en un diccionario ---
+        # --- Empaquetar la taxonomía seleccionada (CORREGIDO) ---
         taxonomia_seleccionada = {
             "Grado": grado_sel,
-            "Area": area_sel,
+            "Área": area_sel, # <-- CORREGIDO
             "Componente": comp_sel,
-            "Ref. Temática": ref_sel,
+            "Ref. Temática": ref_sel, # <-- CORREGIDO
             "Competencia": competen_sel,
             "Afirmación": afirm_sel,
             "Evidencia": evid_sel
@@ -327,32 +321,21 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
             try:
                 # --- LÓGICA DE INICIALIZACIÓN (Sin cambios) ---
                 datos_obj = json.loads(resultado_generado_texto)
-                
-                # Guardar el objeto original por si acaso
                 st.session_state['resultado_json_obj'] = datos_obj
-                
-                # Inicializar el estado para cada campo editable
                 st.session_state.editable_pregunta = datos_obj.get("pregunta_espejo", "")
-                
                 opciones = datos_obj.get("opciones", {})
                 st.session_state.editable_opcion_a = opciones.get("A", "")
                 st.session_state.editable_opcion_b = opciones.get("B", "")
                 st.session_state.editable_opcion_c = opciones.get("C", "")
                 st.session_state.editable_opcion_d = opciones.get("D", "")
-                
                 st.session_state.editable_clave = datos_obj.get("clave", "")
                 st.session_state.editable_just_clave = datos_obj.get("justificacion_clave", "")
-                
-                # Mapear justificaciones de distractores
                 justifs_list = datos_obj.get("justificaciones_distractores", [])
                 justifs_map = {j.get('opcion'): j.get('justificacion') for j in justifs_list}
-                
                 st.session_state.editable_just_a = justifs_map.get("A", "Justificación para A no generada.")
                 st.session_state.editable_just_b = justifs_map.get("B", "Justificación para B no generada.")
                 st.session_state.editable_just_c = justifs_map.get("C", "Justificación para C no generada.")
                 st.session_state.editable_just_d = justifs_map.get("D", "Justificación para D no generada.")
-                
-                # Bandera para mostrar el editor
                 st.session_state.show_editor = True
                 
             except json.JSONDecodeError:
