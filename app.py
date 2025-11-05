@@ -232,10 +232,10 @@ with col2:
                 st.subheader("Taxonomía (Hoja 1)")
                 df_area_h1 = df_grado[df_grado['Área'] == area_sel]
                 
-                componentes1 = df_area_h1['Componente'].unique()
+                componentes1 = df_area_h1['Componente1'].unique()
                 comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) # <-- COMPONENTE 1
 
-                df_comp1 = df_area_h1[df_area_h1['Componente'] == comp1_sel]
+                df_comp1 = df_area_h1[df_area_h1['Componente1'] == comp1_sel]
                 competencias = df_comp1['Competencia'].unique()
                 competen_sel = st.selectbox("Competencia", options=competencias)
 
@@ -243,7 +243,7 @@ with col2:
                 
                 # Lógica de Ciencias Naturales (usa comp1_sel)
                 if area_sel == 'Ciencias Naturales': 
-                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp1_sel]
+                    df_afirmacion_base = df_competencia[df_competencia['Componente1'] == comp1_sel]
                 else:
                     df_afirmacion_base = df_competencia
                     
@@ -261,10 +261,10 @@ with col2:
                     (df2['Área'] == area_sel)
                 ]
                 
-                componentes2 = df_area_h2['Componente'].unique()
+                componentes2 = df_area_h2['Componente2'].unique()
                 comp2_sel = st.selectbox("Componente (Temática)", options=componentes2) # <-- COMPONENTE 2
 
-                df_comp2 = df_area_h2[df_area_h2['Componente'] == comp2_sel]
+                df_comp2 = df_area_h2[df_area_h2['Componente2'] == comp2_sel]
                 
                 if not df_comp2.empty:
                     refs = df_comp2['Ref. Temática'].unique()
