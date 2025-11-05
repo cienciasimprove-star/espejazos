@@ -7,85 +7,77 @@ from docx import Document
 from docx.shared import Inches
 # Importa la librería de Vertex AI
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part, Image as VertexImage
+from vertexai.generative_models import GenerativeModel, Part, Image as VertexImage, GenerationConfig
 import json
+import random # Necesario para la clave aleatoria
 
 # --- Configuración de Google Cloud (hacer al inicio) ---
 # Descomenta esta línea y configúrala con tu proyecto y región
-# vertexai.init(project="tu-proyecto-gcp", location="tu-region")
+# vertexai.init(project="TU_PROYECTO_GCP", location="TU_REGION")
 
-# --- FUNCIÓN DE IA (CORREGIDA) ---
-# Ahora acepta 'Componente1' y 'Componente2'
-def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
+# --- 1. FUNCIÓN DEL GENERADOR ---
+def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
-    Llama a Vertex AI (Gemini) para analizar la imagen y el texto
-    y generar el nuevo ítem y las justificaciones.
+    GENERADOR: Llama a Vertex AI (Gemini) para analizar la imagen y el texto
+    y generar el nuevo ítem. Acepta feedback de un auditor para refinamiento.
     """
     
-    # 1. Inicializar el modelo multimodal
+    # 1. Inicializar el modelo
     model = GenerativeModel("gemini-1.5-flash-001") 
-
-    # 2. Cargar la imagen y convertirla para la API
+    
+    # 2. Procesar la imagen
     img_pil = Image.open(imagen_cargada)
     buffered = io.BytesIO()
     img_pil.save(buffered, format="PNG")
     img_bytes = buffered.getvalue()
     vertex_img = VertexImage.from_bytes(img_bytes)
 
-    # 3. Construir el string de taxonomía para el prompt
-    #    (usando los nombres de columna correctos)
-    taxonomia_texto = f"""
-        * Grado: {taxonomia_dict.get('Grado', 'N/A')}
-        * Área: {taxonomia_dict.get('Área', 'N/A')}
-        * Componente (Estructura): {taxonomia_dict.get('Componente1', 'N/A')}
-        * Componente (Temática): {taxonomia_dict.get('Componente2', 'N/A')}
-        * Ref. Temática: {taxonomia_dict.get('Ref. Temática', 'N/A')}
-        * Competencia: {taxonomia_dict.get('Competencia', 'N/A')}
-        * Afirmación: {taxonomia_dict.get('Afirmación', 'N/A')}
-        * Evidencia: {taxonomia_dict.get('Evidencia', 'N/A')}
-    """
+    # 3. Preparar los textos del prompt
+    taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
+    clave_aleatoria = random.choice(['A', 'B', 'C', 'D'])
 
-    # 3. Diseño del Prompt
+    # Sección de Feedback (solo aparece si hay un re-intento)
+    seccion_feedback = ""
+    if feedback_auditor:
+        seccion_feedback = f"""
+        --- RETROALIMENTACIÓN DE AUDITORÍA (Error a corregir) ---
+        El intento anterior fue rechazado. DEBES corregir los siguientes errores:
+        {feedback_auditor}
+        --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
+        """
+
+    # 4. Diseño del Prompt (Generador)
     prompt_texto = f"""
-    Eres un experto en psicometría y diseño de ítems educativos.
-    Tu tarea es analizar una pregunta de selección múltiple (presentada como imagen)
-    y generar una "pregunta espejo" basada en el concepto de 'shell cognitivo' de Shavelson.
+    Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
+    DEBES devolver un JSON válido.
+
+    {seccion_feedback}
 
     **Shell Cognitivo (Pregunta Original):**
-    Analiza la estructura lógica, el tipo de habilidad cognitiva (la "Tarea Cognitiva")
-    y el formato de la pregunta en la imagen adjunta.
+    Analiza la estructura lógica y la "Tarea Cognitiva" de la pregunta en la IMAGEN ADJUNTA.
 
-    **Taxonomía Requerida:**
-    La nueva pregunta debe alinearse con esta taxonomía detallada:
+    **Taxonomía Requerida (Tu Guía):**
     {taxonomia_texto}
-
-    **Contexto Adicional del Usuario:**
+    
+    **Contexto Adicional del Usuario (Tema del ítem nuevo):**
     {contexto_adicional}
 
-    --- INSTRUCCIONES DETALLADAS DE GENERACIÓN ---
+    --- ANÁLISIS COGNITIVO OBLIGATORIO (Tu paso 1) ---
+    Basado en la taxonomía (Evidencia, Afirmación, Competencia), define la Tarea Cognitiva exacta que el ítem espejo debe evaluar.
+    (Ej: "La tarea exige que el estudiante identifique la causa de un fenómeno descrito en un texto corto, alineado con la evidencia X...")
+    
+    --- CONSTRUCCIÓN DEL ÍTEM (Tu paso 2) ---
+    Basado en tu análisis, construye el ítem.
+    - ENUNCIADO: Debe ser claro y **NO** usar jerarquías ("más", "mejor", "principalmente").
+    - OPCIONES: 4 opciones (A, B, C, D).
+    - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
+    - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva.
+    - JUSTIFICACIONES:
+        - Clave: "Esta es la respuesta correcta porque..."
+        - Distractores: "El estudiante podría escoger esta opción porque… Sin embargo, esto es incorrecto porque…"
 
-    **1. Generar Pregunta Espejo (Enunciado):**
-    * Crea una nueva pregunta que mantenga la misma estructura cognitiva (el 'shell') que la pregunta original, pero utiliza un contenido temático diferente.
-    * **CRÍTICO:** Escribe **únicamente el enunciado** o 'stem' de la pregunta. NO incluyas las opciones (A, B, C, D) en este campo.
-    * Formula preguntas directas como: "**¿Cuál es la causa de...?**", "**¿Qué conclusión se deriva de...?**".
-    * Evita preguntas de jerarquía (ej. "**¿cuál es la opción más...**").
-
-    **2. Generar Opciones de Respuesta:**
-    * Escribe exactamente cuatro opciones (A, B, C y D).
-    * **Opción Correcta**: Debe ser la única conclusión válida tras ejecutar correctamente la Tarea Cognitiva.
-    * **Distractores (Incorrectos)**: Deben ser plausibles y diseñados a partir de errores típicos en la ejecución de la Tarea Cognitiva.
-
-    **3. Descripción de Imagen Original:**
-    * Si la pregunta original usaba una imagen, genera una descripción textual detallada de esa imagen. Si no hay imagen, indica "N/A".
-
-    **4. Justificaciones (Formato Estricto):**
-    * **Justificación de la Clave:** Explica el razonamiento que lleva a la respuesta correcta.
-    * **Justificaciones de Distractores:** Para CADA opción, sigue este formato:
-        * Si es la clave: "Esta es la respuesta correcta porque..."
-        * Si es un distractor: "El estudiante podría escoger esta opción porque… Sin embargo, esto es incorrecto porque…"
-
-    --- FORMATO DE SALIDA OBLIGATORIO (JSON) ---
-    Responde ÚNICAMENTE con un objeto JSON válido con la siguiente estructura:
+    --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
+    Responde ÚNICAMENTE con el objeto JSON. No incluyas ```json.
     {{
       "pregunta_espejo": "Texto completo del enunciado/stem...",
       "opciones": {{
@@ -94,7 +86,7 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
         "C": "Texto de la opción C",
         "D": "Texto de la opción D"
       }},
-      "clave": "A",
+      "clave": "{clave_aleatoria}",
       "descripcion_imagen_original": "Descripción de la imagen en la pregunta de entrada...",
       "justificacion_clave": "Razón por la que la clave es correcta...",
       "justificaciones_distractores": [
@@ -106,22 +98,80 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     }}
     """
 
-    # 4. Realizar la llamada multimodal
-    st.info("Generando ítem... esto puede tardar un momento.")
-    
-    try:
-        response = model.generate_content([vertex_img, prompt_texto])
-        respuesta_texto = response.text.strip().replace("```json", "").replace("```", "")
-        return respuesta_texto 
+    # 5. Configurar la API para forzar salida JSON
+    config_generacion = GenerationConfig(
+        response_mime_type="application/json"
+    )
 
+    # 6. Llamar a la API
+    try:
+        response = model.generate_content(
+            [vertex_img, prompt_texto], 
+            generation_config=config_generacion
+        )
+        return response.text 
     except Exception as e:
-        st.error(f"Error al contactar Vertex AI: {e}")
+        st.error(f"Error al contactar Vertex AI (Generador): {e}")
         return None
 
+# --- 2. FUNCIÓN DEL AUDITOR ---
+def auditar_item_llm(item_json_texto, taxonomia_dict):
+    """
+    AUDITOR: Audita un ítem generado (en formato JSON) contra la taxonomía
+    y las reglas de calidad. Devuelve un reporte de auditoría en JSON.
+    """
+    
+    model = GenerativeModel("gemini-1.5-flash-001")
+    taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
 
+    # 1. Diseño del Prompt (Auditor)
+    prompt_auditor = f"""
+    Eres un auditor psicométrico experto y riguroso. Tu tarea es auditar el siguiente ítem (en JSON)
+    contra la taxonomía y las reglas de estilo.
+    
+    **Taxonomía de Referencia (Obligatoria):**
+    {taxonomia_texto}
 
-# --- Funciones de Exportación (Punto 5) ---
-# --- (Sin cambios) ---
+    **Ítem Generado (JSON a Auditar):**
+    {item_json_texto}
+
+    --- CRITERIOS DE AUDITORÍA (Evalúa uno por uno) ---
+    1.  **Alineación con Taxonomía:** ¿El ítem (pregunta, opciones, clave) evalúa CLARAMENTE la Evidencia, Afirmación y Competencia de la taxonomía?
+    2.  **Estilo del Enunciado (No Jerarquización):** ¿El enunciado usa palabras prohibidas como "más", "mejor", "principalmente", "cuál es la razón principal"? (Esto es un RECHAZO automático).
+    3.  **Calidad de Distractores:** ¿Los distractores son plausibles? ¿Las justificaciones de los distractores explican el *error* (ej. "El estudiante podría...") y no solo dicen "es incorrecto"?
+    4.  **Clave y Opciones:** ¿Hay 4 opciones? ¿La clave coincide con una opción? ¿La justificación de la clave es clara?
+
+    --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
+    Devuelve tu auditoría como un único objeto JSON. No uses ```json.
+    {{
+      "criterios": [
+        {{ "criterio": "1. Alineación con Taxonomía", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }},
+        {{ "criterio": "2. Estilo (No Jerarquización)", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }},
+        {{ "criterio": "3. Calidad de Distractores", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }},
+        {{ "criterio": "4. Clave y Opciones", "estado": "✅ CUMPLE" o "❌ NO CUMPLE", "comentario": "Justificación breve." }}
+      ],
+      "dictamen_final": "✅ CUMPLE" o "❌ RECHAZADO",
+      "observaciones_finales": "Si es RECHAZADO, explica aquí CLARAMENTE qué debe corregir el generador. (Ej: 'El enunciado usa la palabra 'principalmente', lo cual está prohibido. Re-generar sin jerarquizar.')"
+    }}
+    """
+    
+    # 2. Configurar la API para forzar salida JSON
+    config_generacion = GenerationConfig(
+        response_mime_type="application/json"
+    )
+
+    # 3. Llamar a la API
+    try:
+        response = model.generate_content(
+            prompt_auditor, 
+            generation_config=config_generacion
+        )
+        return response.text
+    except Exception as e:
+        st.error(f"Error al contactar Vertex AI (Auditor): {e}")
+        return None
+
+# --- 3. FUNCIONES DE EXPORTACIÓN (Word y Excel) ---
 
 def crear_excel(datos_generados):
     data_rows = []
@@ -162,10 +212,10 @@ def crear_word(datos_generados):
     document.save(output)
     return output.getvalue()
 
-# --- Interfaz de Streamlit ---
+# --- 4. INTERFAZ DE STREAMLIT (UI) ---
 
 st.set_page_config(layout="wide")
-st.title("🤖 Generador de Ítemes Espejo (Basado en Shells Cognitivos)")
+st.title("🤖 Generador de Ítemes (con Auditoría de IA)")
 
 # --- Columnas para la entrada ---
 col1, col2 = st.columns(2)
@@ -180,28 +230,22 @@ with col1:
     if imagen_subida:
         st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
 
-# --- COLUMNA 2 (CORREGIDA CON LÓGICA BIFURCADA) ---
+# --- COLUMNA 2 (Lógica de Filtros Bifurcada) ---
 with col2:
     st.header("2. Configurar Generación")
     
     # --- 1. Carga del Excel ---
     excel_file = st.file_uploader("Cargar Excel de Taxonomía (un solo .xlsx)", type=['xlsx'])
     
-    # Variables para almacenar las selecciones
-    grado_sel = None
-    area_sel = None
-    comp1_sel = None  # <-- Componente de Hoja 1
-    comp2_sel = None  # <-- Componente de Hoja 2
-    ref_sel = None
-    competen_sel = None
-    afirm_sel = None
-    evid_sel = None
+    # Variables de selección
+    grado_sel, area_sel, comp1_sel, comp2_sel, ref_sel, competen_sel, afirm_sel, evid_sel = (None,) * 8
     
-    # --- 2. Lógica de Filtros en Cascada (CORREGIDA) ---
+    # --- 2. Lógica de Filtros en Cascada ---
     if excel_file is not None:
         try:
             # Cargar hojas en el estado de la sesión
             if 'df1' not in st.session_state or 'df2' not in st.session_state:
+                # Leer hojas por POSICIÓN (1ra y 2da) para evitar errores de nombre
                 data = pd.read_excel(excel_file, sheet_name=None)
                 sheet_names = list(data.keys())
                 if len(sheet_names) < 2:
@@ -217,25 +261,21 @@ with col2:
                 df1 = st.session_state.df1
                 df2 = st.session_state.df2
 
-                # --- Filtro 1: Grado ---
+                # --- Filtros Comunes ---
                 grados = df1['Grado'].unique()
                 grado_sel = st.selectbox("Grado", options=grados)
-
-                # --- Filtro 2: Area (CON TILDE) ---
-                df_grado = df1[df1['Grado'] == grado_sel]
-                areas = df_grado['Área'].unique()
-                area_sel = st.selectbox("Área", options=areas)
-
-                # --- BIFURCACIÓN DE LÓGICA ---
                 
+                df_grado_h1 = df1[df1['Grado'] == grado_sel]
+                areas = df_grado_h1['Área'].unique() # Con tilde
+                area_sel = st.selectbox("Área", options=areas) # Con tilde
+
                 # --- Cascada 1: (Hoja 1 - Estructura) ---
-                st.subheader("Taxonomía (Hoja 1)")
-                df_area_h1 = df_grado[df_grado['Área'] == area_sel]
-                
-                componentes1 = df_area_h1['Componente1'].unique()
-                comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) # <-- COMPONENTE 1
+                st.subheader("Taxonomía (Hoja 1 - Estructura)")
+                df_area_h1 = df_grado_h1[df_grado_h1['Área'] == area_sel]
+                componentes1 = df_area_h1['Componente'].unique()
+                comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) 
 
-                df_comp1 = df_area_h1[df_area_h1['Componente1'] == comp1_sel]
+                df_comp1 = df_area_h1[df_area_h1['Componente'] == comp1_sel]
                 competencias = df_comp1['Competencia'].unique()
                 competen_sel = st.selectbox("Competencia", options=competencias)
 
@@ -243,7 +283,7 @@ with col2:
                 
                 # Lógica de Ciencias Naturales (usa comp1_sel)
                 if area_sel == 'Ciencias Naturales': 
-                    df_afirmacion_base = df_competencia[df_competencia['Componente1'] == comp1_sel]
+                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp1_sel]
                 else:
                     df_afirmacion_base = df_competencia
                     
@@ -255,79 +295,121 @@ with col2:
                 evid_sel = st.selectbox("Evidencia", options=evidencias)
 
                 # --- Cascada 2: (Hoja 2 - Temática) ---
-                st.subheader("Taxonomía (Hoja 2)")
+                st.subheader("Taxonomía (Hoja 2 - Temática)")
                 df_area_h2 = df2[
                     (df2['Grado'] == grado_sel) & 
-                    (df2['Área'] == area_sel)
+                    (df2['Área'] == area_sel) # Con tilde
                 ]
-                
-                componentes2 = df_area_h2['Componente2'].unique()
-                comp2_sel = st.selectbox("Componente (Temática)", options=componentes2) # <-- COMPONENTE 2
+                componentes2 = df_area_h2['Componente'].unique()
+                comp2_sel = st.selectbox("Componente (Temática)", options=componentes2)
 
-                df_comp2 = df_area_h2[df_area_h2['Componente2'] == comp2_sel]
+                df_comp2 = df_area_h2[df_area_h2['Componente'] == comp2_sel]
                 
-                if not df_comp2.empty:
-                    refs = df_comp2['Ref. Temática'].unique()
-                else:
-                    refs = ["N/A"]
-                ref_sel = st.selectbox("Ref. Temática", options=refs)
+                refs = df_comp2['Ref. Temática'].unique() if not df_comp2.empty else ["N/A"] # Con tilde y espacio
+                ref_sel = st.selectbox("Ref. Temática", options=refs) # Con tilde y espacio
 
         except KeyError as e:
             st.error(f"Error de Columna: No se encontró la columna {e}. Revisa que los nombres en el Excel coincidan exactamente (incluyendo tildes y mayúsculas).")
-            # Imprimir columnas para ayudar a depurar
-            if 'df1' in st.session_state:
-                 st.error(f"Columnas Hoja 1: {list(st.session_state.df1.columns)}")
-            if 'df2' in st.session_state:
-                 st.error(f"Columnas Hoja 2: {list(st.session_state.df2.columns)}")
+            if 'df1' in st.session_state: st.error(f"Columnas H1: {list(st.session_state.df1.columns)}")
+            if 'df2' in st.session_state: st.error(f"Columnas H2: {list(st.session_state.df2.columns)}")
             excel_file = None
         except Exception as e:
-            st.error(f"Error inesperado al procesar el Excel. Detalle: {e}")
+            st.error(f"Error inesperado al procesar el Excel: {e}")
             excel_file = None
     
-    # --- 3. Info Adicional (como estaba) ---
+    # --- 3. Info Adicional ---
     info_adicional = st.text_area(
-        "Información adicional (ej. tema específico, contexto)",
+        "Contexto Adicional (Tema para el ítem)",
         height=150,
-        placeholder="Ej: 'Usar el tema de fotosíntesis', 'Enfocar en estudiantes de grado 10'"
+        placeholder="Ej: 'Usar el tema de la fotosíntesis', 'Basarse en la Revolución Francesa'"
     )
 
-# --- Botón de Generación (CORREGIDO) ---
+# --- 5. LÓGICA DEL BOTÓN (Bucle Generador-Auditor) ---
 st.divider()
-if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primary"):
+if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=True, type="primary"):
     
     # --- Validaciones ---
     if imagen_subida is None:
         st.warning("Por favor, sube una imagen primero.")
     elif excel_file is None:
         st.warning("Por favor, carga el archivo Excel de taxonomía.")
-    elif evid_sel is None or ref_sel is None: # Si los últimos filtros no están seteados
-        st.warning("Error en los filtros de taxonomía. Revisa el Excel y las selecciones.")
+    elif evid_sel is None or ref_sel is None:
+        st.warning("Completa toda la selección de taxonomía.")
     
     else:
-        # --- Empaquetar la taxonomía (CORREGIDO) ---
+        # --- Empaquetar la taxonomía ---
         taxonomia_seleccionada = {
             "Grado": grado_sel,
             "Área": area_sel,
-            "Componente1": comp1_sel,  # <-- Componente de Hoja 1
-            "Componente2": comp2_sel,  # <-- Componente de Hoja 2
+            "Componente1_Estructura": comp1_sel,
+            "Componente2_Tematica": comp2_sel,
             "Ref. Temática": ref_sel,
             "Competencia": competen_sel,
             "Afirmación": afirm_sel,
             "Evidencia": evid_sel
         }
         
-        # --- Llamar a la función de IA con los nuevos parámetros ---
-        resultado_generado_texto = generar_item_espejo(
-            imagen_subida, 
-            taxonomia_seleccionada, # Pasa el diccionario
-            info_adicional
-        )
-        
-        if resultado_generado_texto:
-            st.success("¡Ítem generado con éxito! Puedes editarlo abajo.")
+        # --- INICIO DEL BUCLE DE GENERACIÓN Y AUDITORÍA ---
+        max_intentos = 2
+        intento_actual = 0
+        feedback_auditor = ""
+        item_final_json = None
+
+        with st.status("Iniciando proceso...", expanded=True) as status:
+            while intento_actual < max_intentos:
+                intento_actual += 1
+                
+                # 1. GENERAR
+                status.update(label=f"Intento {intento_actual}/{max_intentos}: Generando ítem...")
+                item_json_str = generar_item_llm(
+                    imagen_subida, 
+                    taxonomia_seleccionada,
+                    info_adicional,
+                    feedback_auditor # Pasa el feedback (vacío la primera vez)
+                )
+                
+                if item_json_str is None:
+                    status.update(label=f"Error en la generación (Intento {intento_actual}).", state="error")
+                    continue # Siguiente intento
+
+                # 2. AUDITAR
+                status.update(label=f"Intento {intento_actual}/{max_intentos}: Auditando ítem...")
+                audit_json_str = auditar_item_llm(item_json_str, taxonomia_seleccionada)
+
+                if audit_json_str is None:
+                    status.update(label=f"Error en la auditoría (Intento {intento_actual}).", state="error")
+                    continue # Siguiente intento
+
+                try:
+                    audit_data = json.loads(audit_json_str)
+                    
+                    # 3. DECIDIR
+                    if audit_data.get("dictamen_final") == "✅ CUMPLE":
+                        status.update(label="¡Auditoría Aprobada!", state="complete")
+                        item_final_json = item_json_str
+                        break # ¡Éxito! Salir del bucle
+                    else:
+                        feedback_auditor = audit_data.get("observaciones_finales", "El auditor rechazó el ítem pero no dio observaciones.")
+                        status.update(label=f"Intento {intento_actual} Rechazado. Preparando re-intento...")
+                        # Opcional: mostrar detalles del rechazo
+                        st.expander(f"Detalles del Rechazo (Intento {intento_actual})").json(audit_data)
+                
+                except json.JSONDecodeError:
+                    status.update(label="Error al leer respuesta del auditor.", state="error")
+                    feedback_auditor = "La respuesta del auditor no fue un JSON válido."
+
+            # --- FIN DEL BUCLE ---
+
+            if item_final_json is None:
+                status.update(label=f"No se pudo generar un ítem de alta calidad después de {max_intentos} intentos.", state="error")
+                st.error(f"Último feedback del auditor: {feedback_auditor}")
+            
+        # --- Si el ítem final existe, cárgalo en la UI ---
+        if item_final_json:
+            st.success("¡Ítem generado y auditado con éxito! Puedes editarlo abajo.")
             try:
                 # --- LÓGICA DE INICIALIZACIÓN (Sin cambios) ---
-                datos_obj = json.loads(resultado_generado_texto)
+                datos_obj = json.loads(item_final_json)
                 st.session_state['resultado_json_obj'] = datos_obj
                 st.session_state.editable_pregunta = datos_obj.get("pregunta_espejo", "")
                 opciones = datos_obj.get("opciones", {})
@@ -339,18 +421,17 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
                 st.session_state.editable_just_clave = datos_obj.get("justificacion_clave", "")
                 justifs_list = datos_obj.get("justificaciones_distractores", [])
                 justifs_map = {j.get('opcion'): j.get('justificacion') for j in justifs_list}
-                st.session_state.editable_just_a = justifs_map.get("A", "Justificación para A no generada.")
-                st.session_state.editable_just_b = justifs_map.get("B", "Justificación para B no generada.")
-                st.session_state.editable_just_c = justifs_map.get("C", "Justificación para C no generada.")
-                st.session_state.editable_just_d = justifs_map.get("D", "Justificación para D no generada.")
+                st.session_state.editable_just_a = justifs_map.get("A", "N/A")
+                st.session_state.editable_just_b = justifs_map.get("B", "N/A")
+                st.session_state.editable_just_c = justifs_map.get("C", "N/A")
+                st.session_state.editable_just_d = justifs_map.get("D", "N/A")
                 st.session_state.show_editor = True
                 
             except json.JSONDecodeError:
-                st.error("Error: La respuesta de la IA no fue un JSON válido.")
-                st.text(resultado_generado_texto) # Mostrar el texto crudo para depurar
+                st.error(f"Error al parsear el JSON final: {item_final_json}")
                 st.session_state.show_editor = False
 
-# --- Editor de Ítems y Descarga (Sin cambios) ---
+# --- 6. EDITOR DE ÍTEMS Y DESCARGA ---
 if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
     st.header("3. Edita el Ítem Generado")
@@ -402,7 +483,7 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         st.download_button(
             label="Descargar en Word (.docx)",
             data=archivo_word,
-            file_name="item_espejo_editado.docx",
+            file_name="item_espejo_auditado.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True
         )
@@ -412,7 +493,7 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         st.download_button(
             label="Descargar en Excel (.xlsx)",
             data=archivo_excel,
-            file_name="item_espejo_editado.xlsx",
+            file_name="item_espejo_auditado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
