@@ -321,7 +321,7 @@ with col2:
                     (df2['Grado'] == grado_sel) & 
                     (df2['Área'] == area_sel) # Con tilde
                 ]
-                componentes2 = df_area_h2['Componente2].unique()
+                componentes2 = df_area_h2['Componente2'].unique()
                 comp2_sel = st.selectbox("Componente (Temática)", options=componentes2)
 
                 df_comp2 = df_area_h2[df_area_h2['Componente2'] == comp2_sel]
