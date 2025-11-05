@@ -15,7 +15,7 @@ import json
 # vertexai.init(project="tu-proyecto-gcp", location="tu-region")
 
 # --- FUNCIÓN DE IA (CORREGIDA) ---
-# Ahora usa los nombres de columna correctos (ej. 'Ref. Temática')
+# Ahora acepta 'Componente1' y 'Componente2'
 def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     """
     Llama a Vertex AI (Gemini) para analizar la imagen y el texto
@@ -23,7 +23,6 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     """
     
     # 1. Inicializar el modelo multimodal
-    # Asegúrate de que este modelo exista en tu proyecto (ej: "gemini-1.5-flash-001")
     model = GenerativeModel("gemini-1.5-flash-001") 
 
     # 2. Cargar la imagen y convertirla para la API
@@ -34,11 +33,12 @@ def generar_item_espejo(imagen_cargada, taxonomia_dict, contexto_adicional):
     vertex_img = VertexImage.from_bytes(img_bytes)
 
     # 3. Construir el string de taxonomía para el prompt
-    #    (usando los nombres de columna correctos CON TILDES/ESPACIOS)
+    #    (usando los nombres de columna correctos)
     taxonomia_texto = f"""
         * Grado: {taxonomia_dict.get('Grado', 'N/A')}
         * Área: {taxonomia_dict.get('Área', 'N/A')}
-        * Componente: {taxonomia_dict.get('Componente', 'N/A')}
+        * Componente (Estructura): {taxonomia_dict.get('Componente1', 'N/A')}
+        * Componente (Temática): {taxonomia_dict.get('Componente2', 'N/A')}
         * Ref. Temática: {taxonomia_dict.get('Ref. Temática', 'N/A')}
         * Competencia: {taxonomia_dict.get('Competencia', 'N/A')}
         * Afirmación: {taxonomia_dict.get('Afirmación', 'N/A')}
@@ -180,17 +180,18 @@ with col1:
     if imagen_subida:
         st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
 
-# --- COLUMNA 2 (CORREGIDA) ---
+# --- COLUMNA 2 (CORREGIDA CON LÓGICA BIFURCADA) ---
 with col2:
     st.header("2. Configurar Generación")
     
-    # --- 1. Carga del Excel (CORREGIDO) ---
+    # --- 1. Carga del Excel ---
     excel_file = st.file_uploader("Cargar Excel de Taxonomía (un solo .xlsx)", type=['xlsx'])
     
     # Variables para almacenar las selecciones
     grado_sel = None
     area_sel = None
-    comp_sel = None
+    comp1_sel = None  # <-- Componente de Hoja 1
+    comp2_sel = None  # <-- Componente de Hoja 2
     ref_sel = None
     competen_sel = None
     afirm_sel = None
@@ -200,17 +201,13 @@ with col2:
     if excel_file is not None:
         try:
             # Cargar hojas en el estado de la sesión
-            # Se corrige la lógica de carga
             if 'df1' not in st.session_state or 'df2' not in st.session_state:
-                # --- MODIFICACIÓN CLAVE: Leer hojas por posición ---
                 data = pd.read_excel(excel_file, sheet_name=None)
                 sheet_names = list(data.keys())
-                
                 if len(sheet_names) < 2:
                     st.error("Error: El archivo Excel debe tener al menos dos hojas.")
-                    excel_file = None # Detener
+                    excel_file = None
                 else:
-                    # Asumir que la primera es Hoja 1 y la segunda es Hoja 2
                     st.session_state.df1 = data[sheet_names[0]]
                     st.session_state.df2 = data[sheet_names[1]]
                     st.success(f"Éxito: Cargadas hojas '{sheet_names[0]}' y '{sheet_names[1]}'.")
@@ -221,62 +218,71 @@ with col2:
                 df2 = st.session_state.df2
 
                 # --- Filtro 1: Grado ---
-                # (Se asume que la columna 'Grado' existe en df1)
                 grados = df1['Grado'].unique()
                 grado_sel = st.selectbox("Grado", options=grados)
 
                 # --- Filtro 2: Area (CON TILDE) ---
                 df_grado = df1[df1['Grado'] == grado_sel]
-                areas = df_grado['Área'].unique() # <-- CORREGIDO
-                area_sel = st.selectbox("Area", options=areas)
+                areas = df_grado['Área'].unique()
+                area_sel = st.selectbox("Área", options=areas)
 
-                # --- Filtro 3: Componente (CON TILDE EN FILTRO) ---
-                df_area = df_grado[df_grado['Área'] == area_sel] # <-- CORREGIDO
-                componentes = df_area['Componente'].unique()
-                comp_sel = st.selectbox("Componente", options=componentes)
+                # --- BIFURCACIÓN DE LÓGICA ---
+                
+                # --- Cascada 1: (Hoja 1 - Estructura) ---
+                st.subheader("Taxonomía (Hoja 1)")
+                df_area_h1 = df_grado[df_grado['Área'] == area_sel]
+                
+                componentes1 = df_area_h1['Componente'].unique()
+                comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) # <-- COMPONENTE 1
 
-                # --- Filtro 4: Ref. Temática (CORREGIDO) ---
-                df_ref = df2[
-                    (df2['Grado'] == grado_sel) & 
-                    (df2['Área'] == area_sel) & # <-- CORREGIDO
-                    (df2['Componente'] == comp_sel)
-                ]
-                # Manejar el caso de que no haya referencias
-                if not df_ref.empty:
-                    refs = df_ref['Ref. Temática'].unique() # <-- CORREGIDO
-                else:
-                    refs = ["N/A"]
-                ref_sel = st.selectbox("Ref. Temática", options=refs)
-
-                # --- Filtro 5: Competencia ---
-                competencias = df_area['Competencia'].unique()
+                df_comp1 = df_area_h1[df_area_h1['Componente'] == comp1_sel]
+                competencias = df_comp1['Competencia'].unique()
                 competen_sel = st.selectbox("Competencia", options=competencias)
 
-                # --- Filtro 6: Afirmación (con lógica especial) ---
-                df_competencia = df_area[df_area['Competencia'] == competen_sel]
+                df_competencia = df_comp1[df_comp1['Competencia'] == competen_sel]
                 
-                # Asegúrate de que el nombre 'Ciencias Naturales' sea exacto
+                # Lógica de Ciencias Naturales (usa comp1_sel)
                 if area_sel == 'Ciencias Naturales': 
-                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp_sel]
+                    df_afirmacion_base = df_competencia[df_competencia['Componente'] == comp1_sel]
                 else:
                     df_afirmacion_base = df_competencia
                     
                 afirmaciones = df_afirmacion_base['Afirmación'].unique()
                 afirm_sel = st.selectbox("Afirmación", options=afirmaciones)
 
-                # --- Filtro 7: Evidencia ---
                 df_afirmacion = df_afirmacion_base[df_afirmacion_base['Afirmación'] == afirm_sel]
                 evidencias = df_afirmacion['Evidencia'].unique()
                 evid_sel = st.selectbox("Evidencia", options=evidencias)
 
+                # --- Cascada 2: (Hoja 2 - Temática) ---
+                st.subheader("Taxonomía (Hoja 2)")
+                df_area_h2 = df2[
+                    (df2['Grado'] == grado_sel) & 
+                    (df2['Área'] == area_sel)
+                ]
+                
+                componentes2 = df_area_h2['Componente'].unique()
+                comp2_sel = st.selectbox("Componente (Temática)", options=componentes2) # <-- COMPONENTE 2
+
+                df_comp2 = df_area_h2[df_area_h2['Componente'] == comp2_sel]
+                
+                if not df_comp2.empty:
+                    refs = df_comp2['Ref. Temática'].unique()
+                else:
+                    refs = ["N/A"]
+                ref_sel = st.selectbox("Ref. Temática", options=refs)
+
         except KeyError as e:
             st.error(f"Error de Columna: No se encontró la columna {e}. Revisa que los nombres en el Excel coincidan exactamente (incluyendo tildes y mayúsculas).")
-            st.error(f"Columnas Hoja 1: {list(st.session_state.df1.columns)}")
-            st.error(f"Columnas Hoja 2: {list(st.session_state.df2.columns)}")
-            excel_file = None # Resetea para evitar errores
+            # Imprimir columnas para ayudar a depurar
+            if 'df1' in st.session_state:
+                 st.error(f"Columnas Hoja 1: {list(st.session_state.df1.columns)}")
+            if 'df2' in st.session_state:
+                 st.error(f"Columnas Hoja 2: {list(st.session_state.df2.columns)}")
+            excel_file = None
         except Exception as e:
             st.error(f"Error inesperado al procesar el Excel. Detalle: {e}")
-            excel_file = None # Resetea para evitar errores
+            excel_file = None
     
     # --- 3. Info Adicional (como estaba) ---
     info_adicional = st.text_area(
@@ -294,16 +300,17 @@ if st.button("🚀 Generar Ítem Espejo", use_container_width=True, type="primar
         st.warning("Por favor, sube una imagen primero.")
     elif excel_file is None:
         st.warning("Por favor, carga el archivo Excel de taxonomía.")
-    elif evid_sel is None: # Si el último filtro no está seteado, los demás tampoco
+    elif evid_sel is None or ref_sel is None: # Si los últimos filtros no están seteados
         st.warning("Error en los filtros de taxonomía. Revisa el Excel y las selecciones.")
     
     else:
-        # --- Empaquetar la taxonomía seleccionada (CORREGIDO) ---
+        # --- Empaquetar la taxonomía (CORREGIDO) ---
         taxonomia_seleccionada = {
             "Grado": grado_sel,
-            "Área": area_sel, # <-- CORREGIDO
-            "Componente": comp_sel,
-            "Ref. Temática": ref_sel, # <-- CORREGIDO
+            "Área": area_sel,
+            "Componente1": comp1_sel,  # <-- Componente de Hoja 1
+            "Componente2": comp2_sel,  # <-- Componente de Hoja 2
+            "Ref. Temática": ref_sel,
             "Competencia": competen_sel,
             "Afirmación": afirm_sel,
             "Evidencia": evid_sel
