@@ -10,6 +10,8 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, Part, Image as VertexImage, GenerationConfig
 import json
 import random # Necesario para la clave aleatoria
+from google.cloud import storage
+import os
 
 # --- IMPORTACIÓN CLAVE ---
 # Importamos las TRES funciones que necesitamos
@@ -339,6 +341,33 @@ def crear_word(datos_generados):
     document.save(output)
     return output.getvalue()
 
+
+# --- NUEVA FUNCIÓN PARA LEER EXCEL DESDE GCS ---
+@st.cache_data
+def leer_excel_desde_gcs(bucket_name, file_path):
+    """
+    Lee un archivo Excel (con todas sus hojas) directamente desde GCS.
+    """
+    try:
+        storage_client = storage.Client(project=GCP_PROJECT) # Usa el proyecto ya inicializado
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_path)
+        
+        if not blob.exists():
+            st.error(f"Error: El archivo '{file_path}' no se encontró en el bucket '{bucket_name}'.")
+            return None
+            
+        file_bytes = blob.download_as_bytes()
+        # Cargar todas las hojas del Excel
+        data = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+        st.success(f"Éxito: Cargado '{file_path}' desde GCS.")
+        return data
+    except Exception as e:
+        st.error(f"Error al leer Excel desde GCS: {e}")
+        st.info("Asegúrate de que la cuenta de servicio de Streamlit tenga permisos de 'Storage Object Viewer' en el bucket 'bucket_espejos'.")
+        return None
+# --- FIN DE LA NUEVA FUNCIÓN ---
+
 # --- 4. INTERFAZ DE STREAMLIT (UI) ---
 
 st.set_page_config(layout="wide")
@@ -361,22 +390,28 @@ with col1:
 with col2:
     st.header("2. Configurar Generación")
     
-    excel_file = st.file_uploader("Cargar Excel de Taxonomía (un solo .xlsx)", type=['xlsx'])
+    # --- MODIFICACIÓN: Cargar Excel desde GCS ---
+    bucket_name = "bucket_espejos"
+    excel_file_path = "Estructura privados.xlsx"
+    
+    # Intentamos cargar los datos desde GCS
+    data = leer_excel_desde_gcs(bucket_name, excel_file_path)
+    # --- FIN DE MODIFICACIÓN ---
     
     grado_sel, area_sel, comp1_sel, comp2_sel, ref_sel, competen_sel, afirm_sel, evid_sel = (None,) * 8
     
-    if excel_file is not None:
+    if data is not None: # Cambiamos 'excel_file is not None' por 'data is not None'
         try:
             if 'df1' not in st.session_state or 'df2' not in st.session_state:
-                data = pd.read_excel(excel_file, sheet_name=None)
+                # data ya está cargado por la función de GCS
                 sheet_names = list(data.keys())
                 if len(sheet_names) < 2:
                     st.error("Error: El archivo Excel debe tener al menos dos hojas.")
-                    excel_file = None
+                    data = None # Anulamos data para detener la ejecución
                 else:
                     st.session_state.df1 = data[sheet_names[0]]
                     st.session_state.df2 = data[sheet_names[1]]
-                    st.success(f"Éxito: Cargadas hojas '{sheet_names[0]}' y '{sheet_names[1]}'.")
+                    # La función leer_excel_desde_gcs ya muestra el st.success
             
             if 'df1' in st.session_state:
                 df1 = st.session_state.df1
@@ -393,7 +428,6 @@ with col2:
                 # --- Cascada 1: (Hoja 1 - Estructura) ---
                 st.subheader("Taxonomía (Hoja 1 - Estructura)")
                 df_area_h1 = df_grado_h1[df_grado_h1['Área'] == area_sel]
-                # --- CORRECCIÓN DE BUG: Usa 'Componente' ---
                 componentes1 = df_area_h1['Componente1'].unique() 
                 comp1_sel = st.selectbox("Componente (Estructura)", options=componentes1) 
 
@@ -421,7 +455,6 @@ with col2:
                     (df2['Grado'] == grado_sel) & 
                     (df2['Área'] == area_sel) # Con tilde
                 ]
-                # --- CORRECCIÓN DE BUG: Usa 'Componente' ---
                 componentes2 = df_area_h2['Componente2'].unique()
                 comp2_sel = st.selectbox("Componente (Temática)", options=componentes2)
 
@@ -434,10 +467,10 @@ with col2:
             st.error(f"Error de Columna: No se encontró la columna {e}. Revisa las tildes/mayúsculas.")
             if 'df1' in st.session_state: st.error(f"Columnas H1: {list(st.session_state.df1.columns)}")
             if 'df2' in st.session_state: st.error(f"Columnas H2: {list(st.session_state.df2.columns)}")
-            excel_file = None
+            data = None # Anulamos data para detener la ejecución
         except Exception as e:
             st.error(f"Error inesperado al procesar el Excel: {e}")
-            excel_file = None
+            data = None # Anulamos data para detener la ejecución
     
     info_adicional = st.text_area(
         "Contexto Adicional (Tema para el ítem)",
@@ -451,8 +484,8 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
     
     if imagen_subida is None:
         st.warning("Por favor, sube una imagen primero.")
-    elif excel_file is None:
-        st.warning("Por favor, carga el archivo Excel de taxonomía.")
+    elif data is None: # <-- ¡CORRECCIÓN CLAVE!
+        st.warning("El archivo Excel de taxonomía no se pudo cargar desde GCS. Revisa los errores en la Columna 2.")
     elif evid_sel is None or ref_sel is None:
         st.warning("Completa toda la selección de taxonomía.")
     else:
@@ -532,7 +565,7 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                 st.session_state.editable_grafico_nec_enunciado = datos_obj.get("grafico_necesario_enunciado", "NO")
                 # NUEVO: Guardamos la descripción de TEXTO
                 st.session_state.editable_grafico_texto_enunciado = datos_obj.get("descripcion_texto_grafico_enunciado", "N/A")
-                # INICIALIZAMOS EL JSON COMO VACÍO
+                # INICIALIZIAMOS EL JSON COMO VACÍO
                 st.session_state.editable_grafico_json_enunciado = "[]"
     
                 # Opciones (A, B, C, D)
@@ -544,7 +577,7 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                     st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"] = opcion_obj.get("grafico_necesario", "NO")
                     # NUEVO: Guardamos la descripción de TEXTO
                     st.session_state[f"editable_opcion_{letra.lower()}_grafico_texto"] = opcion_obj.get("descripcion_texto_grafico", "N/A")
-                    # INICIALIZAMOS EL JSON COMO VACÍO
+                    # INICIALIZIAMOS EL JSON COMO VACÍO
                     st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = "[]"
     
                 # Justificaciones
@@ -561,7 +594,6 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                 st.error(f"Error al parsear el JSON final: {item_final_json}")
                 st.session_state.show_editor = False
 
-# --- 6. EDITOR DE ÍTEMS Y DESCARGA (ACTUALIZADO) ---
 # --- 6. EDITOR DE ÍTEMS Y DESCARGA (LÓGICA DE BOTONES SEPARADA) ---
 if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
