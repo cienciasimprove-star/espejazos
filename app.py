@@ -12,9 +12,9 @@ import json
 import random # Necesario para la clave aleatoria
 
 # --- IMPORTACIÓN CLAVE ---
-# Importamos 'crear_grafico' (el renderizador) y no 'generar_grafico_desde_texto' (el que llama al LLM)
+# Importamos las TRES funciones que necesitamos
 try:
-    from graficos_plugins import crear_grafico, generar_grafico_desde_texto
+    from graficos_plugins import crear_grafico, generar_grafico_desde_texto, build_visual_json_with_llm
     GRAFICOS_DISPONIBLES = True
 except ImportError:
     st.error("Advertencia: No se encontró el archivo 'graficos_plugins.py'. La previsualización de gráficos no funcionará.")
@@ -24,7 +24,8 @@ except ImportError:
         return None
     def generar_grafico_desde_texto(*args, **kwargs):
         return None, None
-
+    def build_visual_json_with_llm(*args, **kwargs):
+        return None
 # --- Configuración de Google Cloud (hacer al inicio) ---
 # Descomenta esta línea y configúrala con tu proyecto y región
 # vertexai.init(project="TU_PROYECTO_GCP", location="TU_REGION")
@@ -549,6 +550,7 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                 st.session_state.show_editor = False
 
 # --- 6. EDITOR DE ÍTEMS Y DESCARGA (ACTUALIZADO) ---
+# --- 6. EDITOR DE ÍTEMS Y DESCARGA (LÓGICA DE BOTONES SEPARADA) ---
 if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
     st.header("3. Edita el Ítem Generado")
@@ -569,27 +571,23 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
             height=100
         )
         
-        if st.button("Generar/Previsualizar Gráfico (Enunciado) 🤖", key="btn_gen_enunciado"):
+        # --- Botón 1: Generar JSON ---
+        if st.button("Generar JSON desde Texto (Enunciado) 🤖", key="btn_gen_json_enunciado"):
             if GRAFICOS_DISPONIBLES:
-                with st.spinner("Llamando a IA de plugins para generar JSON y gráfico..."):
+                with st.spinner("Llamando a IA de plugins para generar JSON..."):
                     texto_desc = st.session_state.editable_grafico_texto_enunciado
-                    # LLAMADA A LA IA N.º 2
-                    spec, buffer_imagen = generar_grafico_desde_texto(texto_desc)
+                    # LLAMADA A LA IA QUE SOLO HACE JSON
+                    spec = build_visual_json_with_llm(texto_desc)
                     
-                    if buffer_imagen and spec:
-                        st.session_state['img_buffer_enunciado'] = buffer_imagen
+                    if spec:
                         # GUARDAMOS EL JSON CORRECTO EN EL EDITOR
                         st.session_state.editable_grafico_json_enunciado = json.dumps([spec], indent=2)
-                        st.success("¡JSON y gráfico generados!")
+                        st.session_state['img_buffer_enunciado'] = None # Limpiamos la imagen anterior
+                        st.success("¡JSON generado! Ahora puedes editarlo o generar el gráfico.")
                     else:
-                        st.session_state['img_buffer_enunciado'] = None
-                        st.error("La IA de plugins no pudo generar un gráfico con esa descripción.")
+                        st.error("La IA de plugins no pudo generar un JSON con esa descripción.")
             else:
                 st.warning("El módulo 'graficos_plugins.py' no está disponible.")
-
-        # Mostramos la imagen si existe en el estado
-        if 'img_buffer_enunciado' in st.session_state and st.session_state.img_buffer_enunciado:
-            st.image(st.session_state.img_buffer_enunciado, caption="Previsualización generada por IA")
 
         st.text_area(
             "Datos del Gráfico (JSON) - (Editable)", 
@@ -597,8 +595,8 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
             height=150
         )
         
-        # Lógica para re-renderizar si el usuario edita el JSON manualmente
-        if st.button("Actualizar Previsualización desde JSON (Enunciado)", key="btn_render_enunciado"):
+        # --- Botón 2: Renderizar Gráfico desde JSON ---
+        if st.button("Generar/Actualizar Gráfico desde JSON (Enunciado) 🖼️", key="btn_render_enunciado"):
             if GRAFICOS_DISPONIBLES:
                 try:
                     json_data = json.loads(st.session_state.editable_grafico_json_enunciado)
@@ -619,6 +617,11 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
                 except Exception as e:
                     st.session_state['img_buffer_enunciado'] = None
                     st.error(f"Error al renderizar JSON: {e}")
+        
+        # Mostramos la imagen si existe en el estado
+        if 'img_buffer_enunciado' in st.session_state and st.session_state.img_buffer_enunciado:
+            st.image(st.session_state.img_buffer_enunciado, caption="Previsualización generada")
+
 
     # --- OPCIONES Y SUS GRÁFICOS ---
     st.subheader("Opciones")
@@ -639,27 +642,24 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
                 height=100
             )
             
-            if st.button(f"Generar/Previsualizar Gráfico (Opción {letra}) 🤖", key=f"btn_gen_op_{letra}"):
+            # --- Botón 1: Generar JSON ---
+            if st.button(f"Generar JSON desde Texto (Opción {letra}) 🤖", key=f"btn_gen_json_op_{letra}"):
                 if GRAFICOS_DISPONIBLES:
-                    with st.spinner(f"Llamando a IA de plugins para generar JSON y gráfico (Opción {letra})..."):
+                    with st.spinner(f"Llamando a IA de plugins para generar JSON (Opción {letra})..."):
                         texto_desc = st.session_state[f"editable_opcion_{letra.lower()}_grafico_texto"]
-                        # LLAMADA A LA IA N.º 2
-                        spec, buffer_imagen = generar_grafico_desde_texto(texto_desc)
+                        # LLAMADA A LA IA QUE SOLO HACE JSON
+                        spec = build_visual_json_with_llm(texto_desc)
                         
-                        if buffer_imagen and spec:
-                            st.session_state[f'img_buffer_op_{letra}'] = buffer_imagen
+                        if spec:
                             # GUARDAMOS EL JSON CORRECTO EN EL EDITOR
                             st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = json.dumps([spec], indent=2)
-                            st.success(f"¡JSON y gráfico generados para Opción {letra}!")
+                            st.session_state[f'img_buffer_op_{letra}'] = None # Limpiamos la imagen anterior
+                            st.success(f"¡JSON generado para Opción {letra}!")
                         else:
                             st.session_state[f'img_buffer_op_{letra}'] = None
-                            st.error(f"La IA de plugins no pudo generar un gráfico con esa descripción (Opción {letra}).")
+                            st.error(f"La IA de plugins no pudo generar un JSON (Opción {letra}).")
                 else:
                     st.warning("El módulo 'graficos_plugins.py' no está disponible.")
-
-            # Mostramos la imagen si existe en el estado
-            if f'img_buffer_op_{letra}' in st.session_state and st.session_state[f'img_buffer_op_{letra}']:
-                st.image(st.session_state[f'img_buffer_op_{letra}'], caption=f"Previsualización Opción {letra}")
 
             st.text_area(
                 f"Datos Gráfico Opción {letra} (JSON) - (Editable)", 
@@ -667,8 +667,8 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
                 height=150
             )
             
-            # Lógica para re-renderizar si el usuario edita el JSON manualmente
-            if st.button(f"Actualizar Previsualización desde JSON (Opción {letra})", key=f"btn_render_op_{letra}"):
+            # --- Botón 2: Renderizar Gráfico desde JSON ---
+            if st.button(f"Generar/Actualizar Gráfico desde JSON (Opción {letra}) 🖼️", key=f"btn_render_op_{letra}"):
                 if GRAFICOS_DISPONIBLES:
                     try:
                         json_data = json.loads(st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"])
@@ -685,10 +685,14 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
                                 st.success(f"Previsualización actualizada desde JSON (Opción {letra}).")
                             else:
                                 st.session_state[f'img_buffer_op_{letra}'] = None
-                                st.error(f"No se pudo renderizar el gráfico desde el JSON (Opción {letra}). Revisa el formato.")
+                                st.error(f"No se pudo renderizar el gráfico desde el JSON (Opción {letra}).")
                     except Exception as e:
                         st.session_state[f'img_buffer_op_{letra}'] = None
                         st.error(f"Error al renderizar JSON: {e}")
+
+            # Mostramos la imagen si existe en el estado
+            if f'img_buffer_op_{letra}' in st.session_state and st.session_state[f'img_buffer_op_{letra}']:
+                st.image(st.session_state[f'img_buffer_op_{letra}'], caption=f"Previsualización Opción {letra}")
 
     st.subheader("Clave")
     st.text_input("Clave (Respuesta Correcta)", key="editable_clave")
