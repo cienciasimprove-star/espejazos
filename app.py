@@ -29,14 +29,10 @@ except ImportError:
 # Descomenta esta línea y configúrala con tu proyecto y región
 # vertexai.init(project="TU_PROYECTO_GCP", location="TU_REGION")
 
-# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA) ---
-# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
-
-# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
-# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA PARA DEVOLVER TEXTO) ---
+# --- 1. FUNCIÓN DEL GENERADOR (CORREGIDA PARA TEXTO NATURAL PURO) ---
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
-    GENERADOR: Genera el ítem, pidiendo descripciones de gráficos en LENGUAJE NATURAL.
+    GENERADOR: Genera el ítem, pidiendo descripciones de gráficos en LENGUAJE NATURAL PURO.
     """
     
     # --- Configuración del Modelo ---
@@ -62,7 +58,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # --- 4. Diseño del Prompt (Generador) - ¡AHORA PIDE TEXTO! ---
+    # --- 4. Diseño del Prompt (Generador) - ¡EJEMPLOS CORREGIDOS! ---
     prompt_texto = f"""
     Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
     DEBES devolver un JSON válido.
@@ -109,13 +105,13 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
       "justificacion_clave": "Razón por la que la clave es correcta...",
       
       "grafico_necesario_enunciado": "SÍ",
-      "descripcion_texto_grafico_enunciado": "Una tabla con dos columnas 'País' y 'Capital', y una fila de datos 'Colombia', 'Bogotá'.",
+      "descripcion_texto_grafico_enunciado": "Una tabla simple. La primera fila es el encabezado con 'País' y 'Capital'. La segunda fila tiene 'Colombia' y 'Bogotá'.",
       
       "opciones": {{
         "A": {{
           "texto": "Ver gráfico A",
           "grafico_necesario": "SÍ",
-          "descripcion_texto_grafico": "Un gráfico de barras con eje X ['X', 'Y'] y eje Y [5, 10]."
+          "descripcion_texto_grafico": "Un gráfico de barras verticales simple. El eje X tiene dos categorías: 'X' y 'Y'. Los valores del eje Y son 5 para 'X' y 10 para 'Y'."
         }},
         "B": {{
           "texto": "Texto de la Opción B (sin gráfico)",
