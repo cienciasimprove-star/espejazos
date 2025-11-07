@@ -28,16 +28,20 @@ def _escape_braces(text: str) -> str:
 
 
 def _init_vertex() -> None:
-    """Inicializa Vertex AI con project y location desde env vars."""
-    project = os.environ.get("GCP_PROJECT_ID")
-    location = os.environ.get("GCP_LOCATION", "us-central1")
-    if not project:
-        raise RuntimeError("Falta GCP_PROJECT_ID en variables de entorno.")
-    vertexai.init(project=project, location=location)
+    """
+    Inicializa Vertex AI con project y location desde env vars.
+    --- CORRECCIÓN: Esta función ya no es necesaria. ---
+    La app principal (app.py) ahora maneja la inicialización.
+    """
+    pass # La dejamos vacía para que no haga nada.
+
 
 def _get_llm() -> ChatVertexAI:
     """Retorna un ChatVertexAI (Gemini en Vertex) listo para usar."""
-    _init_vertex()
+    
+    # --- CORRECCIÓN: YA NO LLAMAMOS A _init_vertex() ---
+    # La conexión ya fue inicializada por app.py
+    
     # Puedes ajustar el modelo si lo necesitas
     model_name = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash") 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
