@@ -322,6 +322,7 @@ def reemplazar_texto_en_doc(doc, reemplazos):
                             p.text = p.text.replace(clave, valor)
     return doc
 
+
 def crear_word(datos_editados, taxonomia_seleccionada):
     """
     Genera un documento Word rellenando una plantilla desde GCS.
@@ -360,7 +361,8 @@ def crear_word(datos_editados, taxonomia_seleccionada):
         def get_grafico_json(data):
             if not data or data == "[]" or data == []:
                 return "N/A"
-            return json.dumps(data, ensure_ascii=False)
+            # Usamos ensure_ascii=False para que no escape tildes (ej. \u00f3)
+            return json.dumps(data, ensure_ascii=False, indent=2)
 
         inst_enunciado = get_grafico_json(datos_editados.get("descripcion_grafico_enunciado", []))
         inst_a = get_grafico_json(datos_editados.get("opciones", {}).get("A", {}).get("descripcion_grafico", []))
@@ -368,30 +370,30 @@ def crear_word(datos_editados, taxonomia_seleccionada):
         inst_c = get_grafico_json(datos_editados.get("opciones", {}).get("C", {}).get("descripcion_grafico", []))
         inst_d = get_grafico_json(datos_editados.get("opciones", {}).get("D", {}).get("descripcion_grafico", []))
 
-        # 5. Definir todos los reemplazos
+        # 5. Definir todos los reemplazos (¡TODOS CON str()!)
         reemplazos = {
-            "{{ItemPruebaId}}": taxonomia_seleccionada.get("Área", "N/A"), # Como pediste
-            "{{ItemGradoId}}": taxonomia_seleccionada.get("Grado", "N/A"),
-            "{{CompetenciaNombre}}": taxonomia_seleccionada.get("Competencia", "N/A"),
-            "{{ComponenteNombre}}": taxonomia_seleccionada.get("Componente_Estructura", "N/A"),
-            "{{AfirmacionNombre}}": taxonomia_seleccionada.get("Afirmación", "N/A"),
-            "{{EvidenciaNombre}}": taxonomia_seleccionada.get("Evidencia", "N/A"),
-            "{{ItemContexto}}": "", # Dejamos este vacío, ya que el enunciado lo contiene todo
-            "{{ItemEnunciado}}": datos_editados.get("pregunta_espejo", "N/A"),
-            "{{Opción A}}": datos_editados.get("opciones", {}).get("A", {}).get("texto", "N/A"),
-            "{{Opción B}}": datos_editados.get("opciones", {}).get("B", {}).get("texto", "N/A"),
-            "{{Opción C}}": datos_editados.get("opciones", {}).get("C", {}).get("texto", "N/A"),
-            "{{Opción D}}": datos_editados.get("opciones", {}).get("D", {}).get("texto", "N/A"),
-            "{{   Clave}}": clave, # Mantenemos el espacio del placeholder
-            "{{Justificacion_Correcta}}": datos_editados.get("justificacion_clave", "N/A"),
-            "{{Analisis_Distractores}}": analisis_distractores,
-            "{{Instrucciones_enuncuado}}": inst_enunciado,
-            "{{Instrucciones_A}}": inst_a,
-            "{{Instrucciones_B}}": inst_b,
-            "{{Instrucciones_C}}": inst_c,
-            "{{Instrucciones_D}}": inst_d, # Corregido (tu plantilla decía "Enunciado: {{Instrucciones_D}}")
-            "Enunciado: {{Instrucciones_D}}": inst_d, # Por si acaso el placeholder está mal escrito
-            "{{Oportunidad_mejora}}": oportunidad_mejora
+            "{{ItemPruebaId}}": str(taxonomia_seleccionada.get("Área", "N/A")),
+            "{{ItemGradoId}}": str(taxonomia_seleccionada.get("Grado", "N/A")), # <-- CORRECCIÓN
+            "{{CompetenciaNombre}}": str(taxonomia_seleccionada.get("Competencia", "N/A")),
+            "{{ComponenteNombre}}": str(taxonomia_seleccionada.get("Componente_Estructura", "N/A")),
+            "{{AfirmacionNombre}}": str(taxonomia_seleccionada.get("Afirmación", "N/A")),
+            "{{EvidenciaNombre}}": str(taxonomia_seleccionada.get("Evidencia", "N/A")),
+            "{{ItemContexto}}": "", 
+            "{{ItemEnunciado}}": str(datos_editados.get("pregunta_espejo", "N/A")),
+            "{{Opción A}}": str(datos_editados.get("opciones", {}).get("A", {}).get("texto", "N/A")),
+            "{{Opción B}}": str(datos_editados.get("opciones", {}).get("B", {}).get("texto", "N/A")),
+            "{{Opción C}}": str(datos_editados.get("opciones", {}).get("C", {}).get("texto", "N/A")),
+            "{{Opción D}}": str(datos_editados.get("opciones", {}).get("D", {}).get("texto", "N/A")),
+            "{{   Clave}}": str(clave),
+            "{{Justificacion_Correcta}}": str(datos_editados.get("justificacion_clave", "N/A")),
+            "{{Analisis_Distractores}}": str(analisis_distractores),
+            "{{Instrucciones_enuncuado}}": str(inst_enunciado),
+            "{{Instrucciones_A}}": str(inst_a),
+            "{{Instrucciones_B}}": str(inst_b),
+            "{{Instrucciones_C}}": str(inst_c),
+            "{{Instrucciones_D}}": str(inst_d),
+            "Enunciado: {{Instrucciones_D}}": str(inst_d), # Por si acaso
+            "{{Oportunidad_mejora}}": str(oportunidad_mejora)
         }
 
         # 6. Ejecutar los reemplazos
