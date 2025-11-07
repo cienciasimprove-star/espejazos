@@ -31,10 +31,11 @@ except ImportError:
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
 
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
+# --- 1. FUNCIÓN DEL GENERADOR (VERSIÓN FINAL CORREGIDA) ---
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
     GENERADOR: Genera el ítem, donde el enunciado Y/O las opciones pueden ser imágenes/tablas.
-    (Versión mejorada con limpieza de JSON y lógica de gráficos avanzada)
+    (Versión mejorada con limpieza de JSON y lógica de gráficos COMPLETA)
     """
     
     # --- Configuración del Modelo ---
@@ -60,7 +61,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # --- 4. Diseño del Prompt (Generador) - ¡CON LÓGICA DE GRÁFICOS INTEGRADA! ---
+    # --- 4. Diseño del Prompt (Generador) - ¡CON LÓGICA DE GRÁFICOS COMPLETA! ---
     prompt_texto = f"""
     Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
     DEBES devolver un JSON válido.
@@ -98,22 +99,40 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
 
     Cada objeto JSON en la lista DEBE contener: "tipo_elemento", "datos", "configuracion" y "descripcion".
 
-    1. Para "tipo_elemento", elige UNO de la siguiente lista: 
-       grafico_barras_verticales, grafico_circular, tabla, construccion_geometrica, 
-       diagrama_arbol, flujograma, pictograma, scatter_plot, line_plot, 
-       histogram, box_plot, otro_tipo.
-       
-    2. Para "descripcion", proporciona un texto en lenguaje natural que resuma el gráfico 
-       para validación.
+    1. Para "tipo_elemento", elige UNO de la lista que se provee más abajo.
+    
+    2. Para "descripcion", proporciona un texto en lenguaje natural que resuma el gráfico.
 
-    3. LÓGICA CONDICIONAL PARA EL CAMPO "datos":
-       - Si eliges un tipo de la lista (QUE NO SEA "otro_tipo"): 
-         El campo "datos" debe ser un objeto con la información estructurada.
-         (Ej: {{"columnas": ["X", "Y"], "filas": [[1, 2]]}})
-       - Si eliges "otro_tipo" (para diagramas, geometrías, etc.):
-         El campo "datos" debe ser un objeto con una clave "descripcion_natural".
-         (Ej: {{"descripcion_natural": "Un diagrama de un circuito en serie con una batería de 9V y tres resistencias..."}})
+    3. LÓGICA CONDICIONAL PARA "datos" (¡MUY IMPORTANTE!):
+       Usa la estructura de "datos" EXACTA que corresponde al "tipo_elemento" de esta lista:
 
+    --- LINEAMIENTOS RÁPIDOS DE FORMATO JSON (Reglas de graficos_plugins.py) ---
+    - grafico_barras_verticales: {{"x":[...], "y":[...]}} (o {{"Categorias":[...], "Valores":[...]}})
+    - grafico_circular: {{"Etiquetas":[...], "Valores":[...]}}
+    - tabla: {{"matrix":[[enc1, enc2, ...], [fila1c1, fila1c2, ...], ...]}}
+    - construccion_geometrica: {{"elements":[
+        {{"type":"point","coords":[x,y],"config":{{"label":"A"}}}},
+        {{"type":"line","coords":[[x1,y1],[x2,y2]],"config":{{}}}},
+        {{"type":"polygon","coords":[[x,y],...],"config":{{"facecolor":"#...","alpha":0.3}}}},
+        {{"type":"circle","config":{{"center":[cx,cy],"radius":r,"patch_config":{{}} }} }},
+        {{"type":"arrow","config":{{"start":[x1,y1],"end":[x2,y2],"patch_config":{{}} }} }}
+      ]}}
+    - diagrama_arbol/network_diagram: {{"nodes":[...], "edges":[["A","B"],...], "labels":{{"A":"Raíz"}} }}
+    - flujograma: {{"dot_source": "digraph G {{ A->B; B->C; }}" }}
+    - pictograma: {{"values":{{"CatA":10,"CatB":5}}, "colors":["#...","#..."] }}
+    - scatter_plot/line_plot: {{"x":[...], "y":[...]}}
+    - histogram: {{"values":[...]}}
+    - box_plot: {{"data":[[...],[...]]}} (o dict de listas)
+    - violin_plot: {{"data":[[...],[...]]}} (o x/y si prefieres seaborn)
+    - heatmap: {{"matrix":[[...], [...], ...] }}
+    - contour_plot: {{"x":[...], "y":[...], "z":[[...], ...] }}
+    - 3d_plot: {{"x":[...], "y":[...], "z":[...]}} (para scatter/line)
+    - area_plot: {{"y":[...]}} (o {{"x":[...], "y":[[...],[...]]}})
+    - radar_chart: {{"labels":[...], "values":[...]}} (o lista de listas)
+    - venn_diagram: {{"subsets":(a,b,ab)}} (para 2 sets) o 7-tuple (para 3 sets)
+    - fractal: {{"type":"mandelbrot","config":{{"width":400,"max_iter":100}} }}
+    - otro_tipo: {{"descripcion_natural": "Un diagrama de un circuito en serie con..."}}
+    
     --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
     Responde ÚNICAMENTE con el objeto JSON. No incluyas ```json.
     {{
@@ -126,7 +145,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
       "descripcion_grafico_enunciado": [
         {{
           "tipo_elemento": "tabla",
-          "datos": {{ "columnas": ["País", "Capital"], "filas": [["Colombia", "Bogotá"]] }},
+          "datos": {{ "matrix": [["País", "Capital"], ["Colombia", "Bogotá"]] }},
           "configuracion": {{ "titulo": "Capitales" }},
           "descripcion": "Una tabla simple de países y capitales."
         }}
@@ -138,10 +157,10 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
           "grafico_necesario": "SÍ",
           "descripcion_grafico": [
             {{
-              "tipo_elemento": "otro_tipo",
-              "datos": {{ "descripcion_natural": "Un diagrama de un circuito eléctrico simple en serie..." }},
-              "configuracion": {{ "titulo": "Circuito en Serie" }},
-              "descripcion": "Diagrama de un circuito en serie."
+              "tipo_elemento": "grafico_barras_verticales",
+              "datos": {{ "x": ["Categoría 1", "Categoría 2"], "y": [100, 150] }},
+              "configuracion": {{ "titulo": "Gráfico de Barras A" }},
+              "descripcion": "Un gráfico de barras simple."
             }}
           ]
         }},
