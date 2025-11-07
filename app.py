@@ -451,14 +451,14 @@ def generar_oportunidad_mejora_llm(taxonomia_data, justificacion_clave):
         
         prompt = f"""
         Eres un tutor académico experto. Tu tarea es escribir una breve recomendación (1-2 frases)
-        para un estudiante que quiera mejorar en una habilidad específica.
+        para un estudiante o profesor.
         
         HABILIDAD EVALUADA (Evidencia): {evidencia}
         COMPETENCIA: {competencia}
         JUSTIFICACIÓN DE LA RESPUESTA CORRECTA: {justificacion_clave}
 
-        Basado en esta información, escribe una recomendación accionable y positiva.
-        Habla en segunda persona (ej. "Recuerda que...", "Para mejorar en esto, te recomendamos...").
+        Basado en esta información, escribe una recomendación fácil de aplicar durante clase.
+        Habla en tercera persona y manten un tono formal pero sencillo
         NO uses más de 50 palabras.
         """
         
