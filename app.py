@@ -28,20 +28,26 @@ except ImportError:
 # vertexai.init(project="TU_PROYECTO_GCP", location="TU_REGION")
 
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA) ---
+# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
+
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
     GENERADOR: Genera el ítem, donde el enunciado Y/O las opciones pueden ser imágenes/tablas.
+    (Versión mejorada con limpieza de JSON y lógica de gráficos avanzada)
     """
     
+    # --- Configuración del Modelo ---
     # Modelo de Gemini (corregido al que usas)
     model = GenerativeModel("gemini-2.5-flash-lite") 
     
+    # --- Procesamiento de Imagen ---
     img_pil = Image.open(imagen_cargada)
     buffered = io.BytesIO()
     img_pil.save(buffered, format="PNG")
     img_bytes = buffered.getvalue()
     vertex_img = VertexImage.from_bytes(img_bytes)
 
+    # --- Preparación de variables del Prompt ---
     taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
     clave_aleatoria = random.choice(['A', 'B', 'C', 'D'])
 
@@ -54,7 +60,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # 4. Diseño del Prompt (Generador) - ¡ESTRUCTURA DE OPCIONES CAMBIADA!
+    # --- 4. Diseño del Prompt (Generador) - ¡CON LÓGICA DE GRÁFICOS MEJORADA! ---
     prompt_texto = f"""
     Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
     DEBES devolver un JSON válido.
@@ -81,19 +87,32 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
     - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva.
     
-    --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (ENUNCIADO Y OPCIONES) ---
-    Tanto el enunciado ("descripcion_grafico_enunciado") como CADA opción ("opciones") pueden contener un gráfico.
-    Si el elemento (enunciado u opción) NO necesita un gráfico/tabla, usa "NO" y [].
-    Si SÍ necesita un gráfico, usa "SÍ" y proporciona el JSON de datos.
     
-    Ejemplo de formato para un gráfico (tabla):
-    [
-      {{
-        "tipo_elemento": "tabla",
-        "datos": {{ "columnas": ["X", "Y"], "filas": [[1, 2], [3, 4]] }},
-        "configuracion": {{ "titulo": "Ejemplo" }}
-      }}
-    ]
+    --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (ENUNCIADO Y OPCIONES) ---
+    Tanto el enunciado ("descripcion_grafico_enunciado") como CADA opción ("descripcion_grafico") 
+    pueden contener gráficos.
+
+    Si el elemento (enunciado u opción) NO necesita un gráfico, usa "NO" y [].
+    Si SÍ necesita un gráfico, usa "SÍ" y proporciona una LISTA DE OBJETOS JSON VÁLIDOS 
+    (incluso si es un solo gráfico).
+
+    Cada objeto JSON en la lista DEBE contener: "tipo_elemento", "datos", "configuracion" y "descripcion".
+
+    1. Para "tipo_elemento", elige UNO de la siguiente lista: 
+       grafico_barras_verticales, grafico_circular, tabla, construccion_geometrica, 
+       diagrama_arbol, flujograma, pictograma, scatter_plot, line_plot, 
+       histogram, box_plot, otro_tipo.
+       
+    2. Para "descripcion", proporciona un texto en lenguaje natural que resuma el gráfico 
+       para validación.
+
+    3. LÓGICA CONDICIONAL PARA EL CAMPO "datos":
+       - Si eliges un tipo de la lista (QUE NO SEA "otro_tipo"): 
+         El campo "datos" debe ser un objeto con la información estructurada.
+         (Ej: {{"columnas": ["X", "Y"], "filas": [[1, 2]]}})
+       - Si eliges "otro_tipo" (para diagramas, geometrías, etc.):
+         El campo "datos" debe ser un objeto con una clave "descripcion_natural".
+         (Ej: {{"descripcion_natural": "Un diagrama de un circuito en serie con una batería de 9V y tres resistencias..."}})
 
     --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
     Responde ÚNICAMENTE con el objeto JSON. No incluyas ```json.
@@ -102,16 +121,32 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
       "clave": "{clave_aleatoria}",
       "descripcion_imagen_original": "Descripción de la imagen que el usuario subió...",
       "justificacion_clave": "Razón por la que la clave es correcta...",
-      "grafico_necesario_enunciado": "SÍ" o "NO",
-      "descripcion_grafico_enunciado": [ ... (el JSON del gráfico del enunciado o []) ... ],
+      
+      "grafico_necesario_enunciado": "SÍ",
+      "descripcion_grafico_enunciado": [
+        {{
+          "tipo_elemento": "tabla",
+          "datos": {{ "columnas": ["País", "Capital"], "filas": [["Colombia", "Bogotá"]] }},
+          "configuracion": {{ "titulo": "Capitales" }},
+          "descripcion": "Una tabla simple de países y capitales."
+        }}
+      ],
+      
       "opciones": {{
         "A": {{
-          "texto": "Texto de la Opción A (o 'Ver gráfico A' si aplica)",
-          "grafico_necesario": "SÍ" o "NO",
-          "descripcion_grafico": [ ... (JSON del gráfico para la Opción A o []) ... ]
+          "texto": "Ver gráfico A",
+          "grafico_necesario": "SÍ",
+          "descripcion_grafico": [
+            {{
+              "tipo_elemento": "otro_tipo",
+              "datos": {{ "descripcion_natural": "Un diagrama de un circuito eléctrico simple en serie..." }},
+              "configuracion": {{ "titulo": "Circuito en Serie" }},
+              "descripcion": "Diagrama de un circuito en serie."
+            }}
+          ]
         }},
         "B": {{
-          "texto": "Texto de la Opción B",
+          "texto": "Texto de la Opción B (sin gráfico)",
           "grafico_necesario": "NO",
           "descripcion_grafico": []
         }},
@@ -126,6 +161,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
           "descripcion_grafico": []
         }}
       }},
+      
       "justificaciones_distractores": [
         {{ "opcion": "A", "justificacion": "Justificación para A..." }},
         {{ "opcion": "B", "justificacion": "Justificación para B..." }},
@@ -140,11 +176,37 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     )
 
     try:
+        # --- 1. LLAMADA A LA API ---
         response = model.generate_content(
             [vertex_img, prompt_texto], 
             generation_config=config_generacion
         )
-        return response.text 
+        
+        raw_text = response.text
+        
+        # --- 2. MEJORA: LIMPIEZA DE JSON ---
+        # (Esto resuelve el error de 'Error al parsear el JSON final')
+        try:
+            # Encuentra el primer { y el último } para eliminar texto extra
+            start_index = raw_text.find('{')
+            end_index = raw_text.rfind('}') + 1
+            
+            if start_index == -1 or end_index == 0:
+                raise ValueError("No se encontraron los delimitadores JSON '{' o '}'.")
+
+            # Extrae solo el JSON
+            json_str = raw_text[start_index:end_index]
+            
+            # Valida que es un JSON antes de devolver
+            json.loads(json_str) 
+            return json_str
+        
+        except (ValueError, json.JSONDecodeError) as json_e:
+            st.error(f"Error al limpiar/parsear la respuesta del Generador: {json_e}")
+            st.error(f"Respuesta cruda recibida (esto puede ayudar a depurar): {raw_text}")
+            return None
+        # --- FIN DE LA MEJORA DE LIMPIEZA ---
+
     except Exception as e:
         st.error(f"Error al contactar Vertex AI (Generador): {e}")
         return None
