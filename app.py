@@ -14,14 +14,16 @@ import random # Necesario para la clave aleatoria
 # --- IMPORTACIÓN CLAVE ---
 # Importamos 'crear_grafico' (el renderizador) y no 'generar_grafico_desde_texto' (el que llama al LLM)
 try:
-    from graficos_plugins import crear_grafico
+    from graficos_plugins import crear_grafico, generar_grafico_desde_texto
     GRAFICOS_DISPONIBLES = True
 except ImportError:
     st.error("Advertencia: No se encontró el archivo 'graficos_plugins.py'. La previsualización de gráficos no funcionará.")
     GRAFICOS_DISPONIBLES = False
-    # Definir una función placeholder si falla la importación
+    # Definir funciones placeholder si falla la importación
     def crear_grafico(*args, **kwargs):
         return None
+    def generar_grafico_desde_texto(*args, **kwargs):
+        return None, None
 
 # --- Configuración de Google Cloud (hacer al inicio) ---
 # Descomenta esta línea y configúrala con tu proyecto y región
@@ -31,11 +33,10 @@ except ImportError:
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
 
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
-# --- 1. FUNCIÓN DEL GENERADOR (VERSIÓN FINAL CORREGIDA) ---
+# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA PARA DEVOLVER TEXTO) ---
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
-    GENERADOR: Genera el ítem, donde el enunciado Y/O las opciones pueden ser imágenes/tablas.
-    (Versión mejorada con limpieza de JSON y lógica de gráficos COMPLETA)
+    GENERADOR: Genera el ítem, pidiendo descripciones de gráficos en LENGUAJE NATURAL.
     """
     
     # --- Configuración del Modelo ---
@@ -61,7 +62,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # --- 4. Diseño del Prompt (Generador) - ¡CON LÓGICA DE GRÁFICOS COMPLETA! ---
+    # --- 4. Diseño del Prompt (Generador) - ¡AHORA PIDE TEXTO! ---
     prompt_texto = f"""
     Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
     DEBES devolver un JSON válido.
@@ -90,49 +91,15 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     
     
     --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (ENUNCIADO Y OPCIONES) ---
-    Tanto el enunciado ("descripcion_grafico_enunciado") como CADA opción ("descripcion_grafico") 
-    pueden contener gráficos.
-
-    Si el elemento (enunciado u opción) NO necesita un gráfico, usa "NO" y [].
-    Si SÍ necesita un gráfico, usa "SÍ" y proporciona una LISTA DE OBJETOS JSON VÁLIDOS 
-    (incluso si es un solo gráfico).
-
-    Cada objeto JSON en la lista DEBE contener: "tipo_elemento", "datos", "configuracion" y "descripcion".
-
-    1. Para "tipo_elemento", elige UNO de la lista que se provee más abajo.
+    ¡INSTRUCCIÓN CRÍTICA! Para los gráficos, NO debes generar el JSON.
+    En su lugar, proporciona una descripción detallada en LENGUAJE NATURAL de lo que el gráfico debe mostrar.
     
-    2. Para "descripcion", proporciona un texto en lenguaje natural que resuma el gráfico.
-
-    3. LÓGICA CONDICIONAL PARA "datos" (¡MUY IMPORTANTE!):
-       Usa la estructura de "datos" EXACTA que corresponde al "tipo_elemento" de esta lista:
-
-    --- LINEAMIENTOS RÁPIDOS DE FORMATO JSON (Reglas de graficos_plugins.py) ---
-    - grafico_barras_verticales: {{"x":[...], "y":[...]}} (o {{"Categorias":[...], "Valores":[...]}})
-    - grafico_circular: {{"Etiquetas":[...], "Valores":[...]}}
-    - tabla: {{"matrix":[[enc1, enc2, ...], [fila1c1, fila1c2, ...], ...]}}
-    - construccion_geometrica: {{"elements":[
-        {{"type":"point","coords":[x,y],"config":{{"label":"A"}}}},
-        {{"type":"line","coords":[[x1,y1],[x2,y2]],"config":{{}}}},
-        {{"type":"polygon","coords":[[x,y],...],"config":{{"facecolor":"#...","alpha":0.3}}}},
-        {{"type":"circle","config":{{"center":[cx,cy],"radius":r,"patch_config":{{}} }} }},
-        {{"type":"arrow","config":{{"start":[x1,y1],"end":[x2,y2],"patch_config":{{}} }} }}
-      ]}}
-    - diagrama_arbol/network_diagram: {{"nodes":[...], "edges":[["A","B"],...], "labels":{{"A":"Raíz"}} }}
-    - flujograma: {{"dot_source": "digraph G {{ A->B; B->C; }}" }}
-    - pictograma: {{"values":{{"CatA":10,"CatB":5}}, "colors":["#...","#..."] }}
-    - scatter_plot/line_plot: {{"x":[...], "y":[...]}}
-    - histogram: {{"values":[...]}}
-    - box_plot: {{"data":[[...],[...]]}} (o dict de listas)
-    - violin_plot: {{"data":[[...],[...]]}} (o x/y si prefieres seaborn)
-    - heatmap: {{"matrix":[[...], [...], ...] }}
-    - contour_plot: {{"x":[...], "y":[...], "z":[[...], ...] }}
-    - 3d_plot: {{"x":[...], "y":[...], "z":[...]}} (para scatter/line)
-    - area_plot: {{"y":[...]}} (o {{"x":[...], "y":[[...],[...]]}})
-    - radar_chart: {{"labels":[...], "values":[...]}} (o lista de listas)
-    - venn_diagram: {{"subsets":(a,b,ab)}} (para 2 sets) o 7-tuple (para 3 sets)
-    - fractal: {{"type":"mandelbrot","config":{{"width":400,"max_iter":100}} }}
-    - otro_tipo: {{"descripcion_natural": "Un diagrama de un circuito en serie con..."}}
+    Si el elemento (enunciado u opción) NO necesita un gráfico, usa "NO" y "N/A".
+    Si SÍ necesita un gráfico, usa "SÍ" y escribe la descripción.
     
+    Ejemplo de descripción: "Una tabla de 3 columnas y 2 filas. Las columnas son 'País', 'Capital', 'Población'. La primera fila es 'Colombia', 'Bogotá', '8M'. La segunda es 'Argentina', 'Buenos Aires', '3M'."
+    Otro ejemplo: "Un gráfico de barras verticales simple con 3 barras. El eje X tiene las etiquetas 'A', 'B', 'C'. El eje Y (valores) tiene '10', '20', '15'."
+
     --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
     Responde ÚNICAMENTE con el objeto JSON. No incluyas ```json.
     {{
@@ -142,42 +109,28 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
       "justificacion_clave": "Razón por la que la clave es correcta...",
       
       "grafico_necesario_enunciado": "SÍ",
-      "descripcion_grafico_enunciado": [
-        {{
-          "tipo_elemento": "tabla",
-          "datos": {{ "matrix": [["País", "Capital"], ["Colombia", "Bogotá"]] }},
-          "configuracion": {{ "titulo": "Capitales" }},
-          "descripcion": "Una tabla simple de países y capitales."
-        }}
-      ],
+      "descripcion_texto_grafico_enunciado": "Una tabla con dos columnas 'País' y 'Capital', y una fila de datos 'Colombia', 'Bogotá'.",
       
       "opciones": {{
         "A": {{
           "texto": "Ver gráfico A",
           "grafico_necesario": "SÍ",
-          "descripcion_grafico": [
-            {{
-              "tipo_elemento": "grafico_barras_verticales",
-              "datos": {{ "x": ["Categoría 1", "Categoría 2"], "y": [100, 150] }},
-              "configuracion": {{ "titulo": "Gráfico de Barras A" }},
-              "descripcion": "Un gráfico de barras simple."
-            }}
-          ]
+          "descripcion_texto_grafico": "Un gráfico de barras con eje X ['X', 'Y'] y eje Y [5, 10]."
         }},
         "B": {{
           "texto": "Texto de la Opción B (sin gráfico)",
           "grafico_necesario": "NO",
-          "descripcion_grafico": []
+          "descripcion_texto_grafico": "N/A"
         }},
         "C": {{
           "texto": "Texto de la Opción C",
           "grafico_necesario": "NO",
-          "descripcion_grafico": []
+          "descripcion_texto_grafico": "N/A"
         }},
         "D": {{
           "texto": "Texto de la Opción D",
           "grafico_necesario": "NO",
-          "descripcion_grafico": []
+          "descripcion_texto_grafico": "N/A"
         }}
       }},
       
@@ -204,19 +157,12 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         raw_text = response.text
         
         # --- 2. MEJORA: LIMPIEZA DE JSON ---
-        # (Esto resuelve el error de 'Error al parsear el JSON final')
         try:
-            # Encuentra el primer { y el último } para eliminar texto extra
             start_index = raw_text.find('{')
             end_index = raw_text.rfind('}') + 1
-            
             if start_index == -1 or end_index == 0:
                 raise ValueError("No se encontraron los delimitadores JSON '{' o '}'.")
-
-            # Extrae solo el JSON
             json_str = raw_text[start_index:end_index]
-            
-            # Valida que es un JSON antes de devolver
             json.loads(json_str) 
             return json_str
         
@@ -568,28 +514,30 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                 datos_obj = json.loads(item_final_json)
                 st.session_state['resultado_json_obj'] = datos_obj
                 
-                # --- LÓGICA DE INICIALIZACIÓN (ACTUALIZADA para nuevo JSON) ---
+                # --- LÓGICA DE INICIALIZACIÓN (ACTUALIZADA para nuevo JSON con TEXTO) ---
                 st.session_state.editable_pregunta = datos_obj.get("pregunta_espejo", "")
                 st.session_state.editable_clave = datos_obj.get("clave", "")
                 st.session_state.editable_just_clave = datos_obj.get("justificacion_clave", "")
-
+    
                 # Gráfico del Enunciado
                 st.session_state.editable_grafico_nec_enunciado = datos_obj.get("grafico_necesario_enunciado", "NO")
-                grafico_data_enunciado = datos_obj.get("descripcion_grafico_enunciado", [])
-                st.session_state.editable_grafico_json_enunciado = json.dumps(grafico_data_enunciado, indent=2)
-
+                # NUEVO: Guardamos la descripción de TEXTO
+                st.session_state.editable_grafico_texto_enunciado = datos_obj.get("descripcion_texto_grafico_enunciado", "N/A")
+                # INICIALIZAMOS EL JSON COMO VACÍO
+                st.session_state.editable_grafico_json_enunciado = "[]"
+    
                 # Opciones (A, B, C, D)
                 opciones = datos_obj.get("opciones", {})
                 for letra in ["A", "B", "C", "D"]:
-                    # --- FIX: Corregir la inicialización de opciones ---
-                    # El JSON antiguo era "A": "Texto". El nuevo es "A": {"texto": "..."}
-                    opcion_obj = opciones.get(letra, {}) # Obtener el objeto de la opción
+                    opcion_obj = opciones.get(letra, {}) 
                     
                     st.session_state[f"editable_opcion_{letra.lower()}_texto"] = opcion_obj.get("texto", "")
                     st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"] = opcion_obj.get("grafico_necesario", "NO")
-                    grafico_data = opcion_obj.get("descripcion_grafico", [])
-                    st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = json.dumps(grafico_data, indent=2)
-
+                    # NUEVO: Guardamos la descripción de TEXTO
+                    st.session_state[f"editable_opcion_{letra.lower()}_grafico_texto"] = opcion_obj.get("descripcion_texto_grafico", "N/A")
+                    # INICIALIZAMOS EL JSON COMO VACÍO
+                    st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = "[]"
+    
                 # Justificaciones
                 justifs_list = datos_obj.get("justificaciones_distractores", [])
                 justifs_map = {j.get('opcion'): j.get('justificacion') for j in justifs_list}
@@ -617,37 +565,65 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         options=["NO", "SÍ"], 
         key="editable_grafico_nec_enunciado"
     )
-    st.text_area(
-        "Datos del Gráfico (Enunciado)", 
-        key="editable_grafico_json_enunciado", 
-        height=150
-    )
     
-    # --- PREVISUALIZACIÓN (Enunciado) ---
-    if st.session_state.editable_grafico_nec_enunciado == "SÍ" and GRAFICOS_DISPONIBLES:
-        with st.expander("Previsualizar Gráfico del Enunciado"):
-            try:
-                json_data = json.loads(st.session_state.editable_grafico_json_enunciado)
-                if json_data and isinstance(json_data, list):
-                    spec = json_data[0] # Tomar el primer gráfico de la lista
+    if st.session_state.editable_grafico_nec_enunciado == "SÍ":
+        st.text_area(
+            "Descripción de Texto (Generada por IA)", 
+            key="editable_grafico_texto_enunciado", 
+            height=100
+        )
+        
+        if st.button("Generar/Previsualizar Gráfico (Enunciado) 🤖", key="btn_gen_enunciado"):
+            if GRAFICOS_DISPONIBLES:
+                with st.spinner("Llamando a IA de plugins para generar JSON y gráfico..."):
+                    texto_desc = st.session_state.editable_grafico_texto_enunciado
+                    # LLAMADA A LA IA N.º 2
+                    spec, buffer_imagen = generar_grafico_desde_texto(texto_desc)
                     
-                    # --- LLAMADA DIRECTA AL RENDERIZADOR ---
-                    buffer_imagen = crear_grafico(
-                        tipo_grafico=spec.get("tipo_elemento"),
-                        datos=spec.get("datos", {}),
-                        configuracion=spec.get("configuracion", {})
-                    )
-                    if buffer_imagen:
-                        st.image(buffer_imagen, caption="Previsualización")
+                    if buffer_imagen and spec:
+                        st.session_state['img_buffer_enunciado'] = buffer_imagen
+                        # GUARDAMOS EL JSON CORRECTO EN EL EDITOR
+                        st.session_state.editable_grafico_json_enunciado = json.dumps([spec], indent=2)
+                        st.success("¡JSON y gráfico generados!")
                     else:
-                        st.error("No se pudo renderizar el gráfico. Revisa el JSON.")
+                        st.session_state['img_buffer_enunciado'] = None
+                        st.error("La IA de plugins no pudo generar un gráfico con esa descripción.")
+            else:
+                st.warning("El módulo 'graficos_plugins.py' no está disponible.")
 
-            except json.JSONDecodeError:
-                st.error("Error en el formato JSON del gráfico del enunciado.")
-            except Exception as e:
-                st.error(f"Error al intentar renderizar el gráfico: {e}")
+        # Mostramos la imagen si existe en el estado
+        if 'img_buffer_enunciado' in st.session_state and st.session_state.img_buffer_enunciado:
+            st.image(st.session_state.img_buffer_enunciado, caption="Previsualización generada por IA")
 
-    
+        st.text_area(
+            "Datos del Gráfico (JSON) - (Editable)", 
+            key="editable_grafico_json_enunciado", 
+            height=150
+        )
+        
+        # Lógica para re-renderizar si el usuario edita el JSON manualmente
+        if st.button("Actualizar Previsualización desde JSON (Enunciado)", key="btn_render_enunciado"):
+            if GRAFICOS_DISPONIBLES:
+                try:
+                    json_data = json.loads(st.session_state.editable_grafico_json_enunciado)
+                    if json_data and isinstance(json_data, list):
+                        spec = json_data[0]
+                        # LLAMADA AL RENDERIZADOR SIMPLE
+                        buffer_imagen = crear_grafico(
+                            tipo_grafico=spec.get("tipo_elemento"),
+                            datos=spec.get("datos", {}),
+                            configuracion=spec.get("configuracion", {})
+                        )
+                        if buffer_imagen:
+                            st.session_state['img_buffer_enunciado'] = buffer_imagen
+                            st.success("Previsualización actualizada desde JSON.")
+                        else:
+                            st.session_state['img_buffer_enunciado'] = None
+                            st.error("No se pudo renderizar el gráfico desde el JSON. Revisa el formato.")
+                except Exception as e:
+                    st.session_state['img_buffer_enunciado'] = None
+                    st.error(f"Error al renderizar JSON: {e}")
+
     # --- OPCIONES Y SUS GRÁFICOS ---
     st.subheader("Opciones")
     
@@ -659,35 +635,65 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
             options=["NO", "SÍ"], 
             key=f"editable_opcion_{letra.lower()}_grafico_nec"
         )
-        st.text_area(
-            f"Datos Gráfico Opción {letra} (JSON)", 
-            key=f"editable_opcion_{letra.lower()}_grafico_json", 
-            height=100
-        )
         
-        # --- PREVISUALIZACIÓN (Opciones) ---
-        if st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"] == "SÍ" and GRAFICOS_DISPONIBLES:
-            with st.expander(f"Previsualizar Gráfico de Opción {letra}"):
-                try:
-                    json_data = json.loads(st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"])
-                    if json_data and isinstance(json_data, list):
-                        spec = json_data[0]
+        if st.session_state[f"editable_opcion_{letra.lower()}_grafico_nec"] == "SÍ":
+            st.text_area(
+                f"Descripción de Texto (Opción {letra})", 
+                key=f"editable_opcion_{letra.lower()}_grafico_texto", 
+                height=100
+            )
+            
+            if st.button(f"Generar/Previsualizar Gráfico (Opción {letra}) 🤖", key=f"btn_gen_op_{letra}"):
+                if GRAFICOS_DISPONIBLES:
+                    with st.spinner(f"Llamando a IA de plugins para generar JSON y gráfico (Opción {letra})..."):
+                        texto_desc = st.session_state[f"editable_opcion_{letra.lower()}_grafico_texto"]
+                        # LLAMADA A LA IA N.º 2
+                        spec, buffer_imagen = generar_grafico_desde_texto(texto_desc)
                         
-                        # --- LLAMADA DIRECTA AL RENDERIZADOR ---
-                        buffer_imagen = crear_grafico(
-                            tipo_grafico=spec.get("tipo_elemento"),
-                            datos=spec.get("datos", {}),
-                            configuracion=spec.get("configuracion", {})
-                        )
-                        if buffer_imagen:
-                            st.image(buffer_imagen, caption="Previsualización")
+                        if buffer_imagen and spec:
+                            st.session_state[f'img_buffer_op_{letra}'] = buffer_imagen
+                            # GUARDAMOS EL JSON CORRECTO EN EL EDITOR
+                            st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = json.dumps([spec], indent=2)
+                            st.success(f"¡JSON y gráfico generados para Opción {letra}!")
                         else:
-                            st.error("No se pudo renderizar el gráfico. Revisa el JSON.")
-                except json.JSONDecodeError:
-                    st.error(f"Error en el formato JSON del gráfico de la Opción {letra}.")
-                except Exception as e:
-                    st.error(f"Error al intentar renderizar el gráfico: {e}")
-        
+                            st.session_state[f'img_buffer_op_{letra}'] = None
+                            st.error(f"La IA de plugins no pudo generar un gráfico con esa descripción (Opción {letra}).")
+                else:
+                    st.warning("El módulo 'graficos_plugins.py' no está disponible.")
+
+            # Mostramos la imagen si existe en el estado
+            if f'img_buffer_op_{letra}' in st.session_state and st.session_state[f'img_buffer_op_{letra}']:
+                st.image(st.session_state[f'img_buffer_op_{letra}'], caption=f"Previsualización Opción {letra}")
+
+            st.text_area(
+                f"Datos Gráfico Opción {letra} (JSON) - (Editable)", 
+                key=f"editable_opcion_{letra.lower()}_grafico_json", 
+                height=150
+            )
+            
+            # Lógica para re-renderizar si el usuario edita el JSON manualmente
+            if st.button(f"Actualizar Previsualización desde JSON (Opción {letra})", key=f"btn_render_op_{letra}"):
+                if GRAFICOS_DISPONIBLES:
+                    try:
+                        json_data = json.loads(st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"])
+                        if json_data and isinstance(json_data, list):
+                            spec = json_data[0]
+                            # LLAMADA AL RENDERIZADOR SIMPLE
+                            buffer_imagen = crear_grafico(
+                                tipo_grafico=spec.get("tipo_elemento"),
+                                datos=spec.get("datos", {}),
+                                configuracion=spec.get("configuracion", {})
+                            )
+                            if buffer_imagen:
+                                st.session_state[f'img_buffer_op_{letra}'] = buffer_imagen
+                                st.success(f"Previsualización actualizada desde JSON (Opción {letra}).")
+                            else:
+                                st.session_state[f'img_buffer_op_{letra}'] = None
+                                st.error(f"No se pudo renderizar el gráfico desde el JSON (Opción {letra}). Revisa el formato.")
+                    except Exception as e:
+                        st.session_state[f'img_buffer_op_{letra}'] = None
+                        st.error(f"Error al renderizar JSON: {e}")
+
     st.subheader("Clave")
     st.text_input("Clave (Respuesta Correcta)", key="editable_clave")
 
@@ -698,7 +704,7 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.text_area("Justificación C", key="editable_just_c", height=100)
     st.text_area("Justificación D", key="editable_just_d", height=100)
 
-    # --- SECCIÓN DE DESCARGA ---
+    # --- SECCIÓN DE DESCARGA (SIN CAMBIOS EN LA LÓGICA, USA EL JSON) ---
     st.divider()
     st.header("4. Descargar Resultados")
     
@@ -717,14 +723,14 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         ]
     }
     
-    # Re-ensamble del gráfico del enunciado
+    # Re-ensamble del gráfico del enunciado (lee el JSON que generamos o editamos)
     try:
         datos_editados["descripcion_grafico_enunciado"] = json.loads(st.session_state.editable_grafico_json_enunciado)
     except json.JSONDecodeError:
         st.error("El JSON del gráfico del enunciado tiene un error de formato, se guardará como texto.")
         datos_editados["descripcion_grafico_enunciado"] = st.session_state.editable_grafico_json_enunciado
     
-    # Re-ensamble de las opciones (A, B, C, D)
+    # Re-ensamble de las opciones (A, B, C, D) (lee el JSON que generamos o editamos)
     for letra in ["A", "B", "C", "D"]:
         opcion_data = {
             "texto": st.session_state[f"editable_opcion_{letra.lower()}_texto"],
