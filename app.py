@@ -211,7 +211,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         st.error(f"Error al contactar Vertex AI (Generador): {e}")
         return None
 
-# --- 2. FUNCIÓN DEL AUDITOR (ACTUALIZADA) ---
+# --- 2. FUNCIÓN DEL AUDITOR (ACTUALIZADA CON LIMPIEZA DE JSON) ---
 def auditar_item_llm(item_json_texto, taxonomia_dict):
     """
     AUDITOR: Audita el ítem Y la coherencia de los gráficos (enunciado Y opciones).
@@ -264,7 +264,31 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
             prompt_auditor, 
             generation_config=config_generacion
         )
-        return response.text
+        
+        raw_text = response.text
+        
+        # --- INICIO DE LA MEJORA: LIMPIEZA DE JSON (AUDITOR) ---
+        try:
+            # Encuentra el primer { y el último } para eliminar texto extra
+            start_index = raw_text.find('{')
+            end_index = raw_text.rfind('}') + 1
+            
+            if start_index == -1 or end_index == 0:
+                raise ValueError("No se encontraron los delimitadores JSON '{' o '}'.")
+
+            # Extrae solo el JSON
+            json_str = raw_text[start_index:end_index]
+            
+            # Valida que es un JSON antes de devolver
+            json.loads(json_str) 
+            return json_str
+        
+        except (ValueError, json.JSONDecodeError) as json_e:
+            st.error(f"Error al limpiar/parsear la respuesta del Auditor: {json_e}")
+            st.error(f"Respuesta cruda recibida (esto puede ayudar a depurar): {raw_text}")
+            return None
+        # --- FIN DE LA MEJORA DE LIMPIEZA ---
+
     except Exception as e:
         st.error(f"Error al contactar Vertex AI (Auditor): {e}")
         return None
