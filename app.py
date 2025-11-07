@@ -30,6 +30,7 @@ except ImportError:
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA) ---
 # --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
 
+# --- 1. FUNCIÓN DEL GENERADOR (ACTUALIZADA Y MEJORADA) ---
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
     """
     GENERADOR: Genera el ítem, donde el enunciado Y/O las opciones pueden ser imágenes/tablas.
@@ -37,7 +38,6 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     """
     
     # --- Configuración del Modelo ---
-    # Modelo de Gemini (corregido al que usas)
     model = GenerativeModel("gemini-2.5-flash-lite") 
     
     # --- Procesamiento de Imagen ---
@@ -60,7 +60,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # --- 4. Diseño del Prompt (Generador) - ¡CON LÓGICA DE GRÁFICOS MEJORADA! ---
+    # --- 4. Diseño del Prompt (Generador) - ¡CON LÓGICA DE GRÁFICOS INTEGRADA! ---
     prompt_texto = f"""
     Eres un psicómetra experto en "Shells Cognitivos". Tu tarea es crear un ítem espejo basado en la imagen adjunta, alineado con la taxonomía y el contexto.
     DEBES devolver un JSON válido.
