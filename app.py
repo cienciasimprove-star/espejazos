@@ -302,44 +302,110 @@ def crear_excel(datos_generados):
         df.to_excel(writer, index=False, sheet_name='Item Generado')
     return output.getvalue()
 
-def crear_word(datos_generados):
-    document = Document()
-    document.add_heading('Ítem Espejo Generado', level=1)
-    
-    document.add_heading('Pregunta Espejo (Enunciado)', level=2)
-    document.add_paragraph(datos_generados.get("pregunta_espejo", "N/A"))
-    
-    if datos_generados.get("grafico_necesario_enunciado") == "SÍ":
-        document.add_heading('Datos del Gráfico (Enunciado)', level=3)
-        grafico_json_str = json.dumps(datos_generados.get("descripcion_grafico_enunciado", []), indent=2)
-        document.add_paragraph(grafico_json_str)
+# --- 3. FUNCIONES DE EXPORTACIÓN (WORD MODIFICADO PARA GCS) ---
 
-    document.add_heading('Opciones', level=2)
-    opciones = datos_generados.get("opciones", {})
-    for letra in ["A", "B", "C", "D"]:
-        opcion_obj = opciones.get(letra, {})
-        document.add_heading(f"Opción {letra}", level=3)
-        document.add_paragraph(opcion_obj.get("texto", "N/A"))
+def reemplazar_texto_en_doc(doc, reemplazos):
+    """
+    Recorre todos los párrafos y tablas en un documento y reemplaza los placeholders.
+    """
+    for p in doc.paragraphs:
+        for clave, valor in reemplazos.items():
+            if clave in p.text:
+                p.text = p.text.replace(clave, valor)
+    
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for clave, valor in reemplazos.items():
+                        if clave in p.text:
+                            p.text = p.text.replace(clave, valor)
+    return doc
+
+def crear_word(datos_editados, taxonomia_seleccionada):
+    """
+    Genera un documento Word rellenando una plantilla desde GCS.
+    """
+    try:
+        # 1. Descargar la plantilla desde GCS
+        bucket_name = "bucket_espejos"
+        template_name = "formato_limpio.docx"
+        storage_client = storage.Client(project=GCP_PROJECT)
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(template_name)
         
-        if opcion_obj.get("grafico_necesario") == "SÍ":
-            document.add_heading(f'Datos del Gráfico (Opción {letra})', level=4)
-            grafico_json_str = json.dumps(opcion_obj.get("descripcion_grafico", []), indent=2)
-            document.add_paragraph(grafico_json_str)
+        if not blob.exists():
+            st.error(f"Error: La plantilla '{template_name}' no se encontró en el bucket '{bucket_name}'.")
+            return None
+            
+        doc_buffer = io.BytesIO(blob.download_as_bytes())
+        doc = Document(doc_buffer)
+        
+        # 2. Generar la oportunidad de mejora (Llamada a la IA N.º 3)
+        oportunidad_mejora = generar_oportunidad_mejora_llm(
+            taxonomia_seleccionada,
+            datos_editados.get("justificacion_clave", "")
+        )
+        
+        # 3. Preparar los distractores
+        clave = datos_editados.get("clave", "")
+        distractores_texto = []
+        for just in datos_editados.get("justificaciones_distractores", []):
+            opcion = just.get("opcion")
+            if opcion and opcion != clave:
+                distractores_texto.append(f"Opción {opcion}: {just.get('justificacion', 'N/A')}")
+        analisis_distractores = "\n".join(distractores_texto)
 
-    document.add_heading('Clave', level=2)
-    document.add_paragraph(datos_generados.get('clave', 'N/A'))
-    
-    document.add_heading('Justificaciones', level=2)
-    document.add_paragraph(f"**Justificación de la Clave:** {datos_generados.get('justificacion_clave', 'N/A')}")
-    document.add_heading('Justificaciones de Distractores', level=3)
-    justificaciones = datos_generados.get("justificaciones_distractores", [])
-    for just in justificaciones:
-        if just.get('opcion') != datos_generados.get('clave'):
-            document.add_paragraph(f"**Justificación {just.get('opcion')}:** {just.get('justificacion')}")
-    
-    output = io.BytesIO()
-    document.save(output)
-    return output.getvalue()
+        # 4. Preparar las instrucciones de gráficos (convierte JSON a string)
+        def get_grafico_json(data):
+            if not data or data == "[]" or data == []:
+                return "N/A"
+            return json.dumps(data, ensure_ascii=False)
+
+        inst_enunciado = get_grafico_json(datos_editados.get("descripcion_grafico_enunciado", []))
+        inst_a = get_grafico_json(datos_editados.get("opciones", {}).get("A", {}).get("descripcion_grafico", []))
+        inst_b = get_grafico_json(datos_editados.get("opciones", {}).get("B", {}).get("descripcion_grafico", []))
+        inst_c = get_grafico_json(datos_editados.get("opciones", {}).get("C", {}).get("descripcion_grafico", []))
+        inst_d = get_grafico_json(datos_editados.get("opciones", {}).get("D", {}).get("descripcion_grafico", []))
+
+        # 5. Definir todos los reemplazos
+        reemplazos = {
+            "{{ItemPruebaId}}": taxonomia_seleccionada.get("Área", "N/A"), # Como pediste
+            "{{ItemGradoId}}": taxonomia_seleccionada.get("Grado", "N/A"),
+            "{{CompetenciaNombre}}": taxonomia_seleccionada.get("Competencia", "N/A"),
+            "{{ComponenteNombre}}": taxonomia_seleccionada.get("Componente_Estructura", "N/A"),
+            "{{AfirmacionNombre}}": taxonomia_seleccionada.get("Afirmación", "N/A"),
+            "{{EvidenciaNombre}}": taxonomia_seleccionada.get("Evidencia", "N/A"),
+            "{{ItemContexto}}": "", # Dejamos este vacío, ya que el enunciado lo contiene todo
+            "{{ItemEnunciado}}": datos_editados.get("pregunta_espejo", "N/A"),
+            "{{Opción A}}": datos_editados.get("opciones", {}).get("A", {}).get("texto", "N/A"),
+            "{{Opción B}}": datos_editados.get("opciones", {}).get("B", {}).get("texto", "N/A"),
+            "{{Opción C}}": datos_editados.get("opciones", {}).get("C", {}).get("texto", "N/A"),
+            "{{Opción D}}": datos_editados.get("opciones", {}).get("D", {}).get("texto", "N/A"),
+            "{{   Clave}}": clave, # Mantenemos el espacio del placeholder
+            "{{Justificacion_Correcta}}": datos_editados.get("justificacion_clave", "N/A"),
+            "{{Analisis_Distractores}}": analisis_distractores,
+            "{{Instrucciones_enuncuado}}": inst_enunciado,
+            "{{Instrucciones_A}}": inst_a,
+            "{{Instrucciones_B}}": inst_b,
+            "{{Instrucciones_C}}": inst_c,
+            "{{Instrucciones_D}}": inst_d, # Corregido (tu plantilla decía "Enunciado: {{Instrucciones_D}}")
+            "Enunciado: {{Instrucciones_D}}": inst_d, # Por si acaso el placeholder está mal escrito
+            "{{Oportunidad_mejora}}": oportunidad_mejora
+        }
+
+        # 6. Ejecutar los reemplazos
+        doc = reemplazar_texto_en_doc(doc, reemplazos)
+
+        # 7. Guardar el documento final en un nuevo buffer
+        final_buffer = io.BytesIO()
+        doc.save(final_buffer)
+        final_buffer.seek(0)
+        return final_buffer
+
+    except Exception as e:
+        st.error(f"Error al crear el documento Word: {e}")
+        return None
 
 
 # --- NUEVA FUNCIÓN PARA LEER EXCEL DESDE GCS ---
@@ -367,6 +433,41 @@ def leer_excel_desde_gcs(bucket_name, file_path):
         st.info("Asegúrate de que la cuenta de servicio de Streamlit tenga permisos de 'Storage Object Viewer' en el bucket 'bucket_espejos'.")
         return None
 # --- FIN DE LA NUEVA FUNCIÓN ---
+
+
+# --- 2b. NUEVA FUNCIÓN: GENERADOR DE OPORTUNIDAD DE MEJORA ---
+def generar_oportunidad_mejora_llm(taxonomia_data, justificacion_clave):
+    """
+    Genera una breve recomendación académica basada en la habilidad evaluada.
+    """
+    try:
+        model = GenerativeModel("gemini-2.5-flash-lite")
+        
+        # Extraemos los datos clave para el prompt
+        evidencia = taxonomia_data.get("Evidencia", "la habilidad evaluada")
+        competencia = taxonomia_data.get("Competencia", "la competencia general")
+        
+        prompt = f"""
+        Eres un tutor académico experto. Tu tarea es escribir una breve recomendación (1-2 frases)
+        para un estudiante que quiera mejorar en una habilidad específica.
+        
+        HABILIDAD EVALUADA (Evidencia): {evidencia}
+        COMPETENCIA: {competencia}
+        JUSTIFICACIÓN DE LA RESPUESTA CORRECTA: {justificacion_clave}
+
+        Basado en esta información, escribe una recomendación accionable y positiva.
+        Habla en segunda persona (ej. "Recuerda que...", "Para mejorar en esto, te recomendamos...").
+        NO uses más de 50 palabras.
+        """
+        
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    
+    except Exception as e:
+        print(f"Error al generar oportunidad de mejora: {e}")
+        return "Para mejorar en esta habilidad, repasa los conceptos clave de la competencia y practica con ejercicios similares."
+
+
 
 # --- 4. INTERFAZ DE STREAMLIT (UI) ---
 
@@ -499,6 +600,7 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
             "Afirmación": afirm_sel,
             "Evidencia": evid_sel
         }
+        st.session_state['taxonomia_actual'] = taxonomia_seleccionada
         
         max_intentos = 3
         intento_actual = 0
@@ -792,7 +894,8 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     col_word, col_excel = st.columns(2)
     
     with col_word:
-        archivo_word = crear_word(datos_editados)
+        taxonomia_actual = st.session_state.get('taxonomia_actual', {}) # Obtenemos la taxonomía guardada
+        archivo_word = crear_word(datos_editados, taxonomia_actual)
         st.download_button(
             label="Descargar en Word (.docx)",
             data=archivo_word,
