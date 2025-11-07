@@ -27,8 +27,10 @@ except ImportError:
     def build_visual_json_with_llm(*args, **kwargs):
         return None
 # --- Configuración de Google Cloud (hacer al inicio) ---
-# Descomenta esta línea y configúrala con tu proyecto y región
-# vertexai.init(project="TU_PROYECTO_GCP", location="TU_REGION")
+# DESCOMENTA Y RELLENA ESTAS LÍNEAS:
+GCP_PROJECT = "espejazos"  # Escribe aquí el ID de tu proyecto de Google Cloud
+GCP_LOCATION = "us-central1"           # O la región que estés usando (ej. us-east1)
+vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
 
 # --- 1. FUNCIÓN DEL GENERADOR (CORREGIDA PARA TEXTO NATURAL PURO) ---
 def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
