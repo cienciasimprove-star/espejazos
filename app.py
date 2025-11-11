@@ -279,6 +279,26 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
 
 # --- 3. FUNCIONES DE EXPORTACIÓN (ACTUALIZADAS) ---
 
+# --- 3. FUNCIONES DE EXPORTACIÓN (ACTUALIZADAS) ---
+
+def reemplazar_texto_en_doc(doc, reemplazos):
+    """
+    Recorre todos los párrafos y tablas en un documento y reemplaza los placeholders.
+    """
+    for p in doc.paragraphs:
+        for clave, valor in reemplazos.items():
+            if clave in p.text:
+                p.text = p.text.replace(clave, valor)
+    
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for clave, valor in reemplazos.items():
+                        if clave in p.text:
+                            p.text = p.text.replace(clave, valor)
+    return doc
+
 # --- 3. FUNCIONES DE EXPORTACIÓN (EXCEL REESCRITO) ---
 
 def crear_excel(datos_generados, taxonomia_seleccionada, oportunidad_mejora):
