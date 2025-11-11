@@ -106,6 +106,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     - ENUNCIADO: Debe ser claro y **NO** usar jerarquías ("más", "mejor", "principalmente").
     - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
     - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva.
+    - DIFERENCIAS CON EL ITEM INICIAL: *CRITICO* NO se puede usar ninguno de los valores numéricos del ítem inicial. Deben ser totalmente diferentes.
     
     
     --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (ENUNCIADO Y OPCIONES) ---
