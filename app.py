@@ -105,7 +105,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     Basado en tu análisis, construye el ítem.
     - ENUNCIADO: Debe ser claro y **NO** usar jerarquías ("más", "mejor", "principalmente").
     - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
-    - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva. Deben tener la redacción "El estudiante podria escoger la opción {opción} porque... Sin embargo esto es incorrecto porque...
+    - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva. Deben tener la redacción "El estudiante podria escoger la opción XX porque... Sin embargo esto es incorrecto porque...
     - DIFERENCIAS CON EL ITEM INICIAL: *CRITICO* NO se puede usar ninguno de los valores numéricos del ítem inicial. Deben ser totalmente diferentes.
     
     
