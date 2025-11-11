@@ -65,9 +65,7 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
 
     # --- 4. Diseño del Prompt (Generador) - ¡EJEMPLOS CORREGIDOS! ---
     prompt_texto = f"""
-    Eres un psicómetra experto en "Clonación de Ítems" (Item Cloning) y "Shells Cognitivos".
-    Tu tarea es crear un ítem espejo que sea LO MÁS SIMILAR POSIBLE al ítem original en la imagen.
-    DEBES devolver un JSON válido.
+    Eres un  experto en evaluación educativa, con especialización en el diseño de ítems de lectura crítica para pruebas estandarizadas de alto impacto, como la prueba Saber 11 en Colombia. Tu misión es crear una pregunta espejo que sea un clon psicométrico de la pregunta original. Esto significa que, aunque se aplique a un texto nuevo, debe evaluar exactamente la misma habilidad, con el mismo formato y nivel de dificultad, garantizando que ambos ítems sean funcionalmente equivalentes.
 
     {seccion_feedback}
 
@@ -75,15 +73,24 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
     Analiza la estructura lógica y la "Tarea Cognitiva" de la pregunta en la IMAGEN ADJUNTA.
     - Si la pregunta original usa una tabla o gráfico, tu ítem espejo también debería usar uno.
     - **¡IMPORTANTE!** Si las *opciones de respuesta* en la imagen original son gráficas o tablas, debes replicar esa estructura para las opciones del ítem espejo.
-    
+    2. Análisis de la pregunta modelo
+
+    Identifica la habilidad cognitiva (p. ej., inferencia, comprensión literal, vocabulario).
+    Observa el formato (cita breve, expresión subrayada, pregunta abierta, etc.).
+    Revisa el tipo de distractores (antónimos, conceptos afines, distractores temáticos).
+      
     **¡INSTRUCCIÓN CRÍTICA DE SIMILITUD!**
         1.  **NO CAMBIES LA ESTRUCTURA**: Si la pregunta usa una tabla, tu ítem espejo debe usar una tabla con la MISMA ESTRUCTURA (mismas columnas y filas).
-        2.  **SÍ PUEDES CAMBIAR**:
-            - Los **valores numéricos** (ligeramente).
-            - Los **nombres ficticios** (ej. "Institución A" por "Colegio X").
-            - Las **fechas** (ej. "2008-2012" por "2015-2019").
-            - Detalles contextuales y de redacción.
-            - Puedes buscar otros contextos en los que el mismo tipo de pregunta tiene sentido.
+        2.  **DEBES CAMBIAR**:
+            - Los **valores numéricos** 
+            - Los **nombres ficticios**
+            - Los **contextos**
+        3. Creación de la pregunta espejo
+        Sobre el texto nuevo, elabora una pregunta que:
+        Evalúe la misma competencia y evidencia, con igual nivel de dificultad.
+        Repita el formato estructural.
+        Garantice una respuesta correcta única y clara; los distractores deben ser plausibles, pero inequívocamente incorrectos.
+        Utilice vocabulario y complejidad adecuados para estudiantes de grado 11.
 
     **Taxonomía Requerida (Tu Guía):**
     {taxonomia_texto}
