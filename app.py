@@ -279,59 +279,67 @@ def auditar_item_llm(item_json_texto, taxonomia_dict):
 
 # --- 3. FUNCIONES DE EXPORTACIÓN (ACTUALIZADAS) ---
 
-def crear_excel(datos_generados):
-    data_rows = []
-    data_rows.append({"Componente": "Pregunta Espejo", "Contenido": datos_generados.get("pregunta_espejo", "")})
+# --- 3. FUNCIONES DE EXPORTACIÓN (EXCEL REESCRITO) ---
+
+def crear_excel(datos_generados, taxonomia_seleccionada, oportunidad_mejora):
+    """
+    Crea un Excel en formato HORIZONTAL (una fila por ítem) con las columnas
+    específicas solicitadas.
+    """
     
-    # Añadir info del gráfico del enunciado
-    data_rows.append({"Componente": "Gráfico Enunciado", "Contenido": datos_generados.get("grafico_necesario_enunciado", "NO")})
-    grafico_json_str = json.dumps(datos_generados.get("descripcion_grafico_enunciado", []), indent=2)
-    data_rows.append({"Componente": "Datos Gráfico Enunciado (JSON)", "Contenido": grafico_json_str})
-
-    opciones = datos_generados.get("opciones", {})
-    for letra in ["A", "B", "C", "D"]:
-        opcion_obj = opciones.get(letra, {})
-        # Añadir texto de la opción
-        data_rows.append({"Componente": f"Opción {letra} - Texto", "Contenido": opcion_obj.get("texto", "")})
-        # Añadir info del gráfico de la opción
-        data_rows.append({"Componente": f"Opción {letra} - Gráfico", "Contenido": opcion_obj.get("grafico_necesario", "NO")})
-        grafico_json_str = json.dumps(opcion_obj.get("descripcion_grafico", []), indent=2)
-        data_rows.append({"Componente": f"Opción {letra} - Datos Gráfico (JSON)", "Contenido": grafico_json_str})
-
-    data_rows.append({"Componente": "Clave", "Contenido": datos_generados.get("clave", "")})
-    data_rows.append({"Componente": "Justificación Clave", "Contenido": datos_generados.get("justificacion_clave", "")})
+    # 1. Mapear las justificaciones a un diccionario para fácil acceso
     justificaciones = datos_generados.get("justificaciones_distractores", [])
-    for just in justificaciones:
-        data_rows.append({"Componente": f"Justificación {just.get('opcion')}", "Contenido": just.get('justificacion')})
+    justifs_map = {j.get('opcion'): j.get('justificacion') for j in justificaciones}
     
-    df = pd.DataFrame(data_rows)
+    # 2. Crear el diccionario de datos para la única fila
+    data_dict = {
+        "ITEM": "NA",
+        "Responsable": "IA ESPEJAZOS",
+        "Área": taxonomia_seleccionada.get("Área", "N/A"),
+        "Componente": taxonomia_seleccionada.get("Componente_Estructura", "N/A"), # Asumiendo Componente de Estructura
+        "Competencia": taxonomia_seleccionada.get("Competencia", "N/A"),
+        "Afirmación": taxonomia_seleccionada.get("Afirmación", "N/A"),
+        "Evidencia": taxonomia_seleccionada.get("Evidencia", "N/A"),
+        "Temática": taxonomia_seleccionada.get("Ref. Temática", "N/A"),
+        "Dificultad estimada": "NA", # <-- CAMBIO: Valor fijo "NA"
+        "Estándar": "NA",
+        "Estado": "Espejo",
+        "Nivel (curso)": taxonomia_seleccionada.get("Grado", "N/A"),
+        "Número en el PDF": "NA",
+        "Guía (Primeras palabras del ítem)": datos_generados.get("pregunta_espejo", "N/A"),
+        "Oportunidad de mejora": oportunidad_mejora,
+        "Justificación de la respuesta A": justifs_map.get("A", "N/A"),
+        "Justificación de la respuesta B": justifs_map.get("B", "N/A"),
+        "Justificación de la respuesta C": justifs_map.get("C", "N/A"),
+        "Justificación de la respuesta D": justifs_map.get("D", "N/A"),
+        "Clave": datos_generados.get("clave", "N/A"),
+        "Pregunta #": "NA"
+    }
+
+    # 3. Crear el DataFrame
+    df = pd.DataFrame([data_dict])
+    
+    # 4. Forzar el orden de columnas exacto que pediste
+    columnas_ordenadas = [
+        "ITEM", "Responsable", "Área", "Componente", "Competencia", "Afirmación", 
+        "Evidencia", "Temática", "Dificultad estimada", "Estándar", "Estado", 
+        "Nivel (curso)", "Número en el PDF", "Guía (Primeras palabras del ítem)", 
+        "Oportunidad de mejora", "Justificación de la respuesta A", 
+        "Justificación de la respuesta B", "Justificación de la respuesta C", 
+        "Justificación de la respuesta D", "Clave", "Pregunta #"
+    ]
+    # Filtra solo las columnas que existen en el df para evitar errores si falta una
+    columnas_finales = [col for col in columnas_ordenadas if col in df.columns]
+    df = df[columnas_finales]
+
+    # 5. Guardar en el buffer de Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Item Generado')
     return output.getvalue()
 
-# --- 3. FUNCIONES DE EXPORTACIÓN (WORD MODIFICADO PARA GCS) ---
 
-def reemplazar_texto_en_doc(doc, reemplazos):
-    """
-    Recorre todos los párrafos y tablas en un documento y reemplaza los placeholders.
-    """
-    for p in doc.paragraphs:
-        for clave, valor in reemplazos.items():
-            if clave in p.text:
-                p.text = p.text.replace(clave, valor)
-    
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    for clave, valor in reemplazos.items():
-                        if clave in p.text:
-                            p.text = p.text.replace(clave, valor)
-    return doc
-
-
-def crear_word(datos_editados, taxonomia_seleccionada):
+def crear_word(datos_editados, taxonomia_seleccionada, oportunidad_mejora):
     """
     Genera un documento Word rellenando una plantilla desde GCS.
     """
@@ -350,11 +358,8 @@ def crear_word(datos_editados, taxonomia_seleccionada):
         doc_buffer = io.BytesIO(blob.download_as_bytes())
         doc = Document(doc_buffer)
         
-        # 2. Generar la oportunidad de mejora (Llamada a la IA N.º 3)
-        oportunidad_mejora = generar_oportunidad_mejora_llm(
-            taxonomia_seleccionada,
-            datos_editados.get("justificacion_clave", "")
-        )
+        # 2. Oportunidad de mejora (Ahora se recibe como argumento)
+        # (La llamada a la IA se eliminó de aquí)
         
         # 3. Preparar los distractores
         clave = datos_editados.get("clave", "")
@@ -381,7 +386,7 @@ def crear_word(datos_editados, taxonomia_seleccionada):
         # 5. Definir todos los reemplazos (¡TODOS CON str()!)
         reemplazos = {
             "{{ItemPruebaId}}": str(taxonomia_seleccionada.get("Área", "N/A")),
-            "{{ItemGradoId}}": str(taxonomia_seleccionada.get("Grado", "N/A")), # <-- CORRECCIÓN
+            "{{ItemGradoId}}": str(taxonomia_seleccionada.get("Grado", "N/A")), 
             "{{CompetenciaNombre}}": str(taxonomia_seleccionada.get("Competencia", "N/A")),
             "{{ComponenteNombre}}": str(taxonomia_seleccionada.get("Componente_Estructura", "N/A")),
             "{{AfirmacionNombre}}": str(taxonomia_seleccionada.get("Afirmación", "N/A")),
@@ -392,7 +397,7 @@ def crear_word(datos_editados, taxonomia_seleccionada):
             "{{Opción B}}": str(datos_editados.get("opciones", {}).get("B", {}).get("texto", "N/A")),
             "{{Opción C}}": str(datos_editados.get("opciones", {}).get("C", {}).get("texto", "N/A")),
             "{{Opción D}}": str(datos_editados.get("opciones", {}).get("D", {}).get("texto", "N/A")),
-            "{{   Clave}}": str(clave),
+            "{{  Clave}}": str(clave),
             "{{Justificacion_Correcta}}": str(datos_editados.get("justificacion_clave", "N/A")),
             "{{Analisis_Distractores}}": str(analisis_distractores),
             "{{Instrucciones_enuncuado}}": str(inst_enunciado),
@@ -861,6 +866,7 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.text_area("Justificación D", key="editable_just_d", height=100)
 
     # --- SECCIÓN DE DESCARGA (SIN CAMBIOS EN LA LÓGICA, USA EL JSON) ---
+    # --- SECCIÓN DE DESCARGA (ACTUALIZADA PARA NUEVO EXCEL) ---
     st.divider()
     st.header("4. Descargar Resultados")
     
@@ -901,11 +907,22 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         datos_editados["opciones"][letra] = opcion_data
 
     
+    # --- GENERAR DATOS ADICIONALES ANTES DE LA DESCARGA ---
+    taxonomia_actual = st.session_state.get('taxonomia_actual', {})
+    
+    with st.spinner("Generando oportunidad de mejora..."):
+        # 1. Generar Oportunidad de Mejora (una sola vez)
+        oportunidad_mejora = generar_oportunidad_mejora_llm(
+            taxonomia_actual,
+            datos_editados.get("justificacion_clave", "")
+        )
+    # --- FIN DE CAMBIOS ---
+
     col_word, col_excel = st.columns(2)
     
     with col_word:
-        taxonomia_actual = st.session_state.get('taxonomia_actual', {}) # Obtenemos la taxonomía guardada
-        archivo_word = crear_word(datos_editados, taxonomia_actual)
+        # 2. Pasar la oportunidad_mejora a la función de Word
+        archivo_word = crear_word(datos_editados, taxonomia_actual, oportunidad_mejora)
         st.download_button(
             label="Descargar en Word (.docx)",
             data=archivo_word,
@@ -915,7 +932,12 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         )
         
     with col_excel:
-        archivo_excel = crear_excel(datos_editados)
+        # 3. Pasar los datos a la nueva función de Excel
+        archivo_excel = crear_excel(
+            datos_editados, 
+            taxonomia_actual, 
+            oportunidad_mejora
+        )
         st.download_button(
             label="Descargar en Excel (.xlsx)",
             data=archivo_excel,
