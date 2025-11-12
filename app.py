@@ -299,7 +299,7 @@ def reemplazar_texto_en_doc(doc, reemplazos):
                             p.text = p.text.replace(clave, valor)
     return doc
 
-# --- 3. FUNCIONES DE EXPORTACIÓN (EXCEL REESCRITO) ---
+# --- 3. FUNCIONES DE EXPORTACIÓN (EXCEL REESCRITO CON AFIRMACIÓN) ---
 
 def crear_excel(datos_generados, taxonomia_seleccionada, oportunidad_mejora):
     """
@@ -313,27 +313,33 @@ def crear_excel(datos_generados, taxonomia_seleccionada, oportunidad_mejora):
     
     # 2. Crear el diccionario de datos para la única fila
     data_dict = {
-        "ITEM": "NA",
-        "Responsable": "IA ESPEJAZOS",
+        # --- Columnas de Taxonomía ---
         "Área": taxonomia_seleccionada.get("Área", "N/A"),
-        "Componente": taxonomia_seleccionada.get("Componente_Estructura", "N/A"), # Asumiendo Componente de Estructura
+        "RESPONSABLE": "IA ESPEJAZOS",
+        "COMPONENTE": taxonomia_seleccionada.get("Componente_Estructura", "N/A"),
         "Competencia": taxonomia_seleccionada.get("Competencia", "N/A"),
-        "Afirmación": taxonomia_seleccionada.get("Afirmación", "N/A"),
+        "Afirmación": taxonomia_seleccionada.get("Afirmación", "N/A"), # <-- AÑADIDA DE VUELTA
         "Evidencia": taxonomia_seleccionada.get("Evidencia", "N/A"),
         "Temática": taxonomia_seleccionada.get("Ref. Temática", "N/A"),
-        "Dificultad estimada": "NA", # <-- CAMBIO: Valor fijo "NA"
+        "Nivel (curso)": taxonomia_seleccionada.get("Grado", "N/A"),
+        
+        # --- Columnas de Metadatos (Fijas) ---
+        "PASTILLA": "NA",
+        "Dificultad estimada": "NA",
         "Estándar": "NA",
         "Estado": "Espejo",
-        "Nivel (curso)": taxonomia_seleccionada.get("Grado", "N/A"),
         "Número en el PDF": "NA",
+        "ID ÍTEM": "NA",
+        "ID CONTEXTO": "NA",
+
+        # --- Columnas de Contenido del Ítem ---
         "Guía (Primeras palabras del ítem)": datos_generados.get("pregunta_espejo", "N/A"),
         "Oportunidad de mejora": oportunidad_mejora,
         "Justificación de la respuesta A": justifs_map.get("A", "N/A"),
         "Justificación de la respuesta B": justifs_map.get("B", "N/A"),
         "Justificación de la respuesta C": justifs_map.get("C", "N/A"),
         "Justificación de la respuesta D": justifs_map.get("D", "N/A"),
-        "Clave": datos_generados.get("clave", "N/A"),
-        "Pregunta #": "NA"
+        "Clave": datos_generados.get("clave", "N/A")
     }
 
     # 3. Crear el DataFrame
@@ -341,14 +347,31 @@ def crear_excel(datos_generados, taxonomia_seleccionada, oportunidad_mejora):
     
     # 4. Forzar el orden de columnas exacto que pediste
     columnas_ordenadas = [
-        "ITEM", "Responsable", "Área", "Componente", "Competencia", "Afirmación", 
-        "Evidencia", "Temática", "Dificultad estimada", "Estándar", "Estado", 
-        "Nivel (curso)", "Número en el PDF", "Guía (Primeras palabras del ítem)", 
-        "Oportunidad de mejora", "Justificación de la respuesta A", 
-        "Justificación de la respuesta B", "Justificación de la respuesta C", 
-        "Justificación de la respuesta D", "Clave", "Pregunta #"
+        "Área",
+        "RESPONSABLE",
+        "COMPONENTE",
+        "Competencia",
+        "Afirmación", # <-- AÑADIDA DE VUELTA
+        "Evidencia",
+        "PASTILLA",
+        "Temática",
+        "Dificultad estimada",
+        "Estándar",
+        "Estado",
+        "Nivel (curso)",
+        "Número en el PDF",
+        "ID ÍTEM",
+        "ID CONTEXTO",
+        "Guía (Primeras palabras del ítem)",
+        "Oportunidad de mejora",
+        "Justificación de la respuesta A",
+        "Justificación de la respuesta B",
+        "Justificación de la respuesta C",
+        "Justificación de la respuesta D",
+        "Clave"
     ]
-    # Filtra solo las columnas que existen en el df para evitar errores si falta una
+    
+    # Filtra solo las columnas que existen en el df para evitar errores
     columnas_finales = [col for col in columnas_ordenadas if col in df.columns]
     df = df[columnas_finales]
 
@@ -357,7 +380,6 @@ def crear_excel(datos_generados, taxonomia_seleccionada, oportunidad_mejora):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Item Generado')
     return output.getvalue()
-
 
 def crear_word(datos_editados, taxonomia_seleccionada, oportunidad_mejora):
     """
