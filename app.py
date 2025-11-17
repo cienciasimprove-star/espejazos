@@ -550,7 +550,7 @@ with col2:
     
     # --- MODIFICACIÓN: Cargar Excel desde GCS ---
     bucket_name = "bucket_espejos"
-    excel_file_path = "Estructura privados1.xlsx"
+    excel_file_path = "Estructura privados.xlsx"
     
     # Intentamos cargar los datos desde GCS
     data = leer_excel_desde_gcs(bucket_name, excel_file_path)
