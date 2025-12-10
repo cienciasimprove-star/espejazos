@@ -29,19 +29,19 @@ except ImportError:
     def build_visual_json_with_llm(*args, **kwargs):
         return None
 # --- Configuración de Google Cloud (hacer al inicio) ---
-# DESCOMENTA Y RELLENA ESTAS LÍNEAS:
-GCP_PROJECT = "espejazos"  # Escribe aquí el ID de tu proyecto de Google Cloud
-GCP_LOCATION = "us-central1"           # O la región que estés usando (ej. us-east1)
+# Usa variables de entorno para el proyecto y la región, con valores por defecto
+GCP_PROJECT = os.environ.get("GCP_PROJECT", "espejazos")
+GCP_LOCATION = os.environ.get("GCP_LOCATION", "us-central1")
 vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
 
 # --- 1. FUNCIÓN DEL GENERADOR (CORREGIDA PARA TEXTO NATURAL PURO) ---
-def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedback_auditor=""):
+def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, model_name, feedback_auditor=""):
     """
     GENERADOR: Genera el ítem, pidiendo descripciones de gráficos en LENGUAJE NATURAL PURO.
     """
     
     # --- Configuración del Modelo ---
-    model = GenerativeModel("gemini-2.5-flash-lite") 
+    model = GenerativeModel(model_name) 
     
     # --- Procesamiento de Imagen ---
     img_pil = Image.open(imagen_cargada)
@@ -196,13 +196,13 @@ def generar_item_llm(imagen_cargada, taxonomia_dict, contexto_adicional, feedbac
         return None
 
 # --- 2. FUNCIÓN DEL AUDITOR (ACTUALIZADA CON LIMPIEZA DE JSON) ---
-def auditar_item_llm(item_json_texto, taxonomia_dict):
+def auditar_item_llm(item_json_texto, taxonomia_dict, model_name):
     """
     AUDITOR: Audita el ítem Y la coherencia de los gráficos (enunciado Y opciones).
     """
     
-    # Modelo de Gemini (corregido al que usas)
-    model = GenerativeModel("gemini-2.5-flash-lite")
+    # Modelo de Gemini (ahora dinámico)
+    model = GenerativeModel(model_name)
     taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
 
     prompt_auditor = f"""
@@ -386,9 +386,9 @@ def crear_word(datos_editados, taxonomia_seleccionada, oportunidad_mejora):
     Genera un documento Word rellenando una plantilla desde GCS.
     """
     try:
-        # 1. Descargar la plantilla desde GCS
-        bucket_name = "bucket_espejos"
-        template_name = "formato_limpio.docx"
+        # 1. Descargar la plantilla desde GCS (usando variables de entorno)
+        bucket_name = os.environ.get("GCS_BUCKET_NAME", "bucket-espejos1")
+        template_name = os.environ.get("WORD_TEMPLATE_NAME", "formato_limpio.docx")
         storage_client = storage.Client(project=GCP_PROJECT)
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(template_name)
@@ -487,18 +487,18 @@ def leer_excel_desde_gcs(bucket_name, file_path):
         return data
     except Exception as e:
         st.error(f"Error al leer Excel desde GCS: {e}")
-        st.info("Asegúrate de que la cuenta de servicio de Streamlit tenga permisos de 'Storage Object Viewer' en el bucket 'bucket_espejos'.")
+        st.info("Asegúrate de que la cuenta de servicio de Streamlit tenga permisos de 'Storage Object Viewer' en el bucket 'bucket-espejos1'.")
         return None
 # --- FIN DE LA NUEVA FUNCIÓN ---
 
 
 # --- 2b. NUEVA FUNCIÓN: GENERADOR DE OPORTUNIDAD DE MEJORA ---
-def generar_oportunidad_mejora_llm(taxonomia_data, justificacion_clave):
+def generar_oportunidad_mejora_llm(taxonomia_data, justificacion_clave, model_name):
     """
     Genera una breve recomendación académica basada en la habilidad evaluada.
     """
     try:
-        model = GenerativeModel("gemini-2.5-flash-lite")
+        model = GenerativeModel(model_name)
         
         # Extraemos los datos clave para el prompt
         evidencia = taxonomia_data.get("Evidencia", "la habilidad evaluada")
@@ -529,7 +529,7 @@ def generar_oportunidad_mejora_llm(taxonomia_data, justificacion_clave):
 # --- 4. INTERFAZ DE STREAMLIT (UI) ---
 
 st.set_page_config(layout="wide")
-st.title("🤖 Generador de Ítemes (con Auditoría de IA)")
+st.title("🤖 Generador de Ítems espejo (con Auditoría de IA)")
 
 # --- Columnas para la entrada ---
 col1, col2 = st.columns(2)
@@ -547,10 +547,24 @@ with col1:
 # --- COLUMNA 2 (Lógica de Filtros Bifurcada y CORREGIDA) ---
 with col2:
     st.header("2. Configurar Generación")
+
+    # --- Selección de Modelos ---
+    modelos_disponibles = ["gemini-2.5-pro", "gemini-2.5-flash","gemini-2.5-flash-lite"]
+    st.subheader("Selección de Modelos")
+    modelo_generador_sel = st.selectbox(
+        "Modelo para Generar Ítem",
+        options=modelos_disponibles,
+        index=0  # Flash por defecto
+    )
+    modelo_auditor_sel = st.selectbox(
+        "Modelo para Auditar Ítem",
+        options=modelos_disponibles,
+        index=0  # Flash por defecto
+    )
     
     # --- MODIFICACIÓN: Cargar Excel desde GCS ---
-    bucket_name = "bucket_espejos"
-    excel_file_path = "Estructura privados.xlsx"
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "bucket-espejos1")
+    excel_file_path = os.environ.get("EXCEL_TAXONOMY_PATH", "Estructura privados1.xlsx")
     
     # Intentamos cargar los datos desde GCS
     data = leer_excel_desde_gcs(bucket_name, excel_file_path)
@@ -668,11 +682,12 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
             while intento_actual < max_intentos:
                 intento_actual += 1
                 
-                status.update(label=f"Intento {intento_actual}/{max_intentos}: Generando ítem...")
+                status.update(label=f"Intento {intento_actual}/{max_intentos}: Generando ítem con {modelo_generador_sel}...")
                 item_json_str = generar_item_llm(
                     imagen_subida, 
                     taxonomia_seleccionada,
                     info_adicional,
+                    modelo_generador_sel, # <--- MODELO SELECCIONADO
                     feedback_auditor 
                 )
                 
@@ -680,8 +695,8 @@ if st.button("🚀 Generar Ítem Espejo (con Auditoría)", use_container_width=T
                     status.update(label=f"Error en la generación (Intento {intento_actual}).", state="error")
                     continue 
 
-                status.update(label=f"Intento {intento_actual}/{max_intentos}: Auditando ítem...")
-                audit_json_str = auditar_item_llm(item_json_str, taxonomia_seleccionada)
+                status.update(label=f"Intento {intento_actual}/{max_intentos}: Auditando ítem con {modelo_auditor_sel}...")
+                audit_json_str = auditar_item_llm(item_json_str, taxonomia_seleccionada, modelo_auditor_sel) # <--- MODELO SELECCIONADO
 
                 if audit_json_str is None:
                     status.update(label=f"Error en la auditoría (Intento {intento_actual}).", state="error")
@@ -956,7 +971,8 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
         # 1. Generar Oportunidad de Mejora (una sola vez)
         oportunidad_mejora = generar_oportunidad_mejora_llm(
             taxonomia_actual,
-            datos_editados.get("justificacion_clave", "")
+            datos_editados.get("justificacion_clave", ""),
+            modelo_auditor_sel # <-- Pasa el modelo del auditor
         )
     # --- FIN DE CAMBIOS ---
 
