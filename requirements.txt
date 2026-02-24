@@ -5,7 +5,6 @@ python-docx
 google-cloud-aiplatform
 Pillow
 openpyxl
-numpy
 
 # --- Motor de Gráficos (graficos_plugins.py) ---
 numpy
