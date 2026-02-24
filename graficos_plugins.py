@@ -8,16 +8,79 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as mpl_Polygon, Circle as mpl_Circle, FancyArrowPatch as mpl_FancyArrowPatch
-from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — side-effect: registra proyección '3d'
 from matplotlib_venn import venn2, venn3
 import networkx as nx
 import graphviz
 from shapely.geometry import LineString, Polygon
 
 # IA (LangChain)
-from langchain.prompts import PromptTemplate
-import vertexai
 from langchain_google_vertexai import ChatVertexAI
+from langchain_core.prompts import PromptTemplate
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+from vertexai.preview.vision_models import ImageGenerationModel
+
+# ==============================================================================
+# 0. GESTOR ESTÉTICO (THEME MANAGER)
+# ==============================================================================
+
+class ChartTheme:
+    """Centraliza la estética de los gráficos para un look premium."""
+    PRIMARY_COLOR = "#1E88E5"    # Azul vibrante
+    SECONDARY_COLOR = "#FFC107"  # Ámbar
+    ACCENT_COLOR = "#D32F2F"     # Rojo suave
+    BG_COLOR = "#FFFFFF"         # Fondo blanco limpio
+    TEXT_COLOR = "#212121"       # Gris casi negro para legibilidad
+    GRID_COLOR = "#E0E0E0"       # Gris muy claro para rejillas
+    FONT_FAMILY = "sans-serif"
+    TITLE_SIZE = 14
+    LABEL_SIZE = 10
+    
+    # Paleta de colores para múltiples categorías (Hues armoniosos)
+    PALETTE = ["#1E88E5", "#FFC107", "#26A69A", "#7E57C2", "#EF5350", "#66BB6A", "#FFA726", "#29B6F6"]
+
+    @classmethod
+    def apply_style(cls, ax):
+        """Aplica estilos base a un objeto Axes de Matplotlib."""
+        ax.set_facecolor(cls.bg_color_to_rgb(cls.BG_COLOR, alpha=0.05))
+        ax.grid(True, linestyle="--", alpha=0.5, color=cls.GRID_COLOR)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.tick_params(colors=cls.TEXT_COLOR, labelsize=cls.LABEL_SIZE)
+        
+    @staticmethod
+    def bg_color_to_rgb(hex_color, alpha=1.0):
+        # Conversión simple para fondos con transparencia si fuera necesario
+        return hex_color
+
+# ==============================================================================
+# 1. ESQUEMAS DE VALIDACIÓN (PYDANTIC)
+# ==============================================================================
+
+class BaseChartSpec(BaseModel):
+    """Contrato base para cualquier elemento visual."""
+    tipo_elemento: str
+    titulo: str = Field(..., description="Título descriptivo del gráfico")
+    ubicacion: str = "enunciado"
+    configuracion: Dict[str, Any] = Field(default_factory=dict)
+
+class BarChartSpec(BaseChartSpec):
+    """Contrato para gráficos de barras."""
+    categorias: List[str]
+    valores: List[float]
+    xlabel: Optional[str] = "Categoría"
+    ylabel: Optional[str] = "Valor"
+
+class PieChartSpec(BaseChartSpec):
+    """Contrato para gráficos circulares."""
+    labels: List[str]
+    sizes: List[float]
+
+class TableSpec(BaseChartSpec):
+    """Contrato para tablas."""
+    matrix: List[List[Any]]
+    col_widths: Optional[List[float]] = None
 
 PLUGIN_REGISTRY = {}
 PLUGIN_ALIASES = {}
@@ -36,20 +99,20 @@ def _init_vertex() -> None:
     pass # La dejamos vacía para que no haga nada.
 
 
+_LLM_INSTANCE: ChatVertexAI = None
+
 def _get_llm() -> ChatVertexAI:
-    """Retorna un ChatVertexAI (Gemini en Vertex) listo para usar."""
-    
-    # --- CORRECCIÓN: YA NO LLAMAMOS A _init_vertex() ---
-    # La conexión ya fue inicializada por app.py
-    
-    # Puedes ajustar el modelo si lo necesitas
-    model_name = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash") 
-    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
-    return ChatVertexAI(
-        model_name=model_name,
-        temperature=temperature,
-        max_output_tokens=8192,
-    )
+    """Retorna un ChatVertexAI singleton. Se instancia una sola vez por proceso."""
+    global _LLM_INSTANCE
+    if _LLM_INSTANCE is None:
+        model_name = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash")
+        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+        _LLM_INSTANCE = ChatVertexAI(
+            model_name=model_name,
+            temperature=temperature,
+            max_output_tokens=8192,
+        )
+    return _LLM_INSTANCE
 
 def register_chart(name, *aliases):
     """Decorador para registrar una función como un plugin para crear gráficos."""
@@ -62,9 +125,16 @@ def register_chart(name, *aliases):
     return _inner
 
 def _resolve_plugin_key(tipo: str) -> str:
-    """Resuelve un nombre o alias al nombre oficial del plugin."""
+    """Resuelve un nombre o alias al nombre oficial del plugin.
+    Orden: PLUGIN_ALIASES (decorators) → CHART_ALIASES (español/natural) → literal."""
     t = str(tipo).lower().strip()
-    return PLUGIN_ALIASES.get(t, t)
+    if t in PLUGIN_ALIASES:
+        return PLUGIN_ALIASES[t]
+    # CHART_ALIASES se define más adelante; accedemos de forma diferida
+    chart_aliases = globals().get("CHART_ALIASES", {})
+    if t in chart_aliases:
+        return chart_aliases[t]
+    return t
 
 def ensure_fig_ax(ax=None, **kwargs):
     """Asegura que tengamos una figura y ejes de Matplotlib para dibujar."""
@@ -135,35 +205,43 @@ def plugin_grafico_barras_verticales(datos: dict, configuracion: dict, ax=None, 
                 raise ValueError(f"Valor no numérico: {it!r}")
         return out
 
+    # --- Usar el Theme Manager para la estética base ---
+    ChartTheme.apply_style(ax)
+
     categorias, valores = None, None
 
-    # 0) dict mapeo {"A":12,"B":9}
-    if datos and isinstance(datos, dict) and len(datos) > 0 and all(not isinstance(v, list) for v in datos.values()):
-        try:
-            categorias = list(datos.keys())
-            valores = _to_num_list(list(datos.values()))
-        except Exception:
-            categorias, valores = None, None
+    # Si los datos ya vienen validados (desde Pydantic), los usamos directamente
+    if "categorias" in datos and "valores" in datos:
+        categorias = datos["categorias"]
+        valores = datos["valores"]
+    else:
+        # Fallback para compatibilidad con datos crudos
+        if datos and isinstance(datos, dict) and len(datos) > 0 and all(not isinstance(v, list) for v in datos.values()):
+            try:
+                categorias = list(datos.keys())
+                valores = _to_num_list(list(datos.values()))
+            except Exception:
+                categorias, valores = None, None
 
-    # 1) series
-    if (categorias is None or valores is None) and isinstance(datos.get("series"), list) and datos["series"]:
-        s0 = datos["series"][0] or {}
-        for ck in ("x", "labels", "categorias", "categorías", "etiquetas"):
-            if ck in s0:
-                categorias = _as_list(s0[ck]); break
-        for vk in ("y", "values", "valores", "data"):
-            if vk in s0:
-                valores = _as_list(s0[vk]); break
+        # 1) series
+        if (categorias is None or valores is None) and isinstance(datos.get("series"), list) and datos["series"]:
+            s0 = datos["series"][0] or {}
+            for ck in ("x", "labels", "categorias", "categorías", "etiquetas"):
+                if ck in s0:
+                    categorias = _as_list(s0[ck]); break
+            for vk in ("y", "values", "valores", "data"):
+                if vk in s0:
+                    valores = _as_list(s0[vk]); break
 
-    # 2) sinónimos en raíz
-    if categorias is None:
-        for ck in ("x", "labels", "categorias", "categorías", "etiquetas"):
-            if ck in datos:
-                categorias = _as_list(datos[ck]); break
-    if valores is None:
-        for vk in ("y", "values", "valores", "data"):
-            if vk in datos:
-                valores = _as_list(datos[vk]); break
+        # 2) sinónimos en raíz
+        if categorias is None:
+            for ck in ("x", "labels", "categorias", "categorías", "etiquetas"):
+                if ck in datos:
+                    categorias = _as_list(datos[ck]); break
+        if valores is None:
+            for vk in ("y", "values", "valores", "data"):
+                if vk in datos:
+                    valores = _as_list(datos[vk]); break
 
     # 3) autodetección
     if (categorias is None or valores is None) and isinstance(datos, dict):
@@ -215,15 +293,17 @@ def plugin_grafico_barras_verticales(datos: dict, configuracion: dict, ax=None, 
 
     ax.bar(
         categorias, valores,
-        color=(configuracion or {}).get("color", "blue"),
+        color=(configuracion or {}).get("color", ChartTheme.PRIMARY_COLOR),
         **((configuracion or {}).get("plot_config", {}) or {})
     )
-    ax.set_title((configuracion or {}).get("titulo", "Gráfico de Barras"), pad=10)
-    ax.set_xlabel((configuracion or {}).get("xlabel", "Categoría"))
-    ax.set_ylabel((configuracion or {}).get("ylabel", "Valor"))
+    ax.set_title((configuracion or {}).get("titulo", "Gráfico de Barras"), 
+                 pad=15, fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.set_xlabel((configuracion or {}).get("xlabel", "Categoría"), color=ChartTheme.TEXT_COLOR)
+    ax.set_ylabel((configuracion or {}).get("ylabel", "Valor"), color=ChartTheme.TEXT_COLOR)
     plt.xticks(
         rotation=(configuracion or {}).get("xticks_rotation", 0),
-        ha=(configuracion or {}).get("xticks_ha", "center")
+        ha=(configuracion or {}).get("xticks_ha", "center"),
+        color=ChartTheme.TEXT_COLOR
     )
     return fig, ax
 
@@ -233,24 +313,39 @@ def plugin_grafico_barras_verticales(datos: dict, configuracion: dict, ax=None, 
 # 2) grafico_circular
 @register_chart("grafico_circular", "pie")
 def plugin_circular(datos, configuracion, debug=False):
-    text_keys = [k for k, v in datos.items() if isinstance(v, list) and all(isinstance(x, str) for x in v)]
-    num_keys  = [k for k, v in datos.items() if isinstance(v, list) and all(isinstance(x, (int, float)) for x in v)]
-    if len(text_keys) != 1 or len(num_keys) != 1:
-        raise ValueError("Se requiere 1 lista de etiquetas (texto) y 1 lista numérica.")
-    labels_key, values_key = text_keys[0], num_keys[0]
-    labels, sizes = datos[labels_key], datos[values_key]
+    labels, sizes = None, None
+    
+    if "labels" in datos and "sizes" in datos:
+        labels, sizes = datos["labels"], datos["sizes"]
+    else:
+        text_keys = [k for k, v in datos.items() if isinstance(v, list) and all(isinstance(x, str) for x in v)]
+        num_keys  = [k for k, v in datos.items() if isinstance(v, list) and all(isinstance(x, (int, float)) for x in v)]
+        if len(text_keys) != 1 or len(num_keys) != 1:
+            raise ValueError("Se requiere 1 lista de etiquetas (texto) y 1 lista numérica.")
+        labels_key, values_key = text_keys[0], num_keys[0]
+        labels, sizes = datos[labels_key], datos[values_key]
+
+    # Normalizar sizes: todos positivos y suma > 0
+    sizes = [max(float(s), 0) for s in sizes]
+    total = sum(sizes)
+    if total <= 0:
+        raise ValueError("Los valores del gráfico circular deben sumar más de cero.")
+    sizes = [s / total * 100 for s in sizes]
+
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.pie(
         sizes,
         labels=labels,
         autopct=configuracion.get("autopct", "%1.1f%%"),
         startangle=configuracion.get("startangle", 90),
-        colors=configuracion.get("colors", None),
-        wedgeprops={"edgecolor": "w"},
+        colors=configuracion.get("colors", ChartTheme.PALETTE),
+        wedgeprops={"edgecolor": "w", "linewidth": 1.5},
+        textprops={'color': ChartTheme.TEXT_COLOR, 'fontsize': ChartTheme.LABEL_SIZE},
         **configuracion.get("plot_config", {})
     )
     ax.axis("equal")
-    ax.set_title(configuracion.get("titulo", "Diagrama Circular"), pad=10)
+    ax.set_title(configuracion.get("titulo", "Diagrama Circular"), 
+                 pad=15, fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
     return fig, ax
 
 
@@ -386,7 +481,12 @@ def plugin_tabla(datos: dict, configuracion: dict, *maybe_ax, **kwargs):
         plt.rcParams["text.usetex"] = False
     except Exception:
         pass
-    ax.clear(); ax.axis("off")
+    ax.clear()
+    ax.axis("off")
+    
+    # Aplicar estilo base al contenedor de la tabla
+    ChartTheme.apply_style(ax)
+    ax.grid(False) # Las tablas no suelen llevar rejilla de fondo
 
     # ------------------ construir la grilla (sin texto) ------------------
     empty = [[""] * ncols for _ in range(nrows)]
@@ -568,6 +668,9 @@ def plugin_construccion(datos, configuracion, debug=False):
     else:
         print("⚠️ Falta 'elements' lista.")
 
+    if min_x == float('inf') or max_x == float('-inf'):
+        min_x, max_x, min_y, max_y = -5, 5, -5, 5
+    
     x_margin = (max_x - min_x) * 0.1 if max_x > min_x else 1
     y_margin = (max_y - min_y) * 0.1 if max_y > min_y else 1
     ax.set_xlim(configuracion.get('xlim', (min_x - x_margin, max_x + x_margin)))
@@ -592,7 +695,7 @@ def plugin_arbol(datos, configuracion, debug=False):
     # networkx fallback
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.set_title(configuracion.get("titulo", "Diagrama de Árbol"), pad=10); ax.axis('off')
-    G = nx.DiGraph() if configuracion.get('directed', False) else nx.Graph()
+    G = nx.DiGraph() if configuracion.get('directed', True) else nx.Graph()
     if 'nodes' in datos: G.add_nodes_from(datos['nodes'])
     if 'edges' in datos: G.add_edges_from(datos['edges'])
     layout = str(configuracion.get('layout', 'spring')).lower()
@@ -702,7 +805,17 @@ def plugin_scatter(datos, configuracion, debug=False):
             ax.scatter(x, y, c=configuracion.get('color', None), marker=configuracion.get('marker', 'o'))
     else:
         ax.scatter(x, y, c=configuracion.get('color', None), marker=configuracion.get('marker', 'o'))
-    ax.set_title(configuracion.get('titulo', 'Gráfico de Dispersión'), pad=10)
+
+    # Anotar puntos si vienen labels
+    labels = datos.get('labels')
+    if isinstance(labels, list) and len(labels) == len(x):
+        for xi, yi, lbl in zip(x, y, labels):
+            ax.annotate(str(lbl), (xi, yi),
+                        textcoords="offset points", xytext=(5, 5),
+                        fontsize=ChartTheme.LABEL_SIZE - 1, color=ChartTheme.TEXT_COLOR)
+
+    ax.set_title(configuracion.get('titulo', 'Gráfico de Dispersión'), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
     ax.set_xlabel(configuracion.get('xlabel', 'Eje X')); ax.set_ylabel(configuracion.get('ylabel', 'Eje Y'))
     return fig, ax
 
@@ -725,8 +838,10 @@ def plugin_line(datos, configuracion, debug=False):
     else:
         ax.plot(x, y, color=configuracion.get('color', None), linestyle=configuracion.get('linestyle', '-'),
                 marker=configuracion.get('marker', None))
-    ax.set_title(configuracion.get('titulo', 'Gráfico de Línea'), pad=10)
-    ax.set_xlabel(configuracion.get('xlabel', 'Eje X')); ax.set_ylabel(configuracion.get('ylabel', 'Eje Y'))
+    ax.set_title(configuracion.get('titulo', 'Gráfico de Línea'), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.set_xlabel(configuracion.get('xlabel', 'Eje X'), color=ChartTheme.TEXT_COLOR)
+    ax.set_ylabel(configuracion.get('ylabel', 'Eje Y'), color=ChartTheme.TEXT_COLOR)
     return fig, ax
 
 
@@ -744,9 +859,12 @@ def plugin_hist(datos, configuracion, debug=False):
         except Exception:
             ax.hist(values, bins=int(configuracion.get('bins', 10)))
     else:
-        ax.hist(values, bins=int(configuracion.get('bins', 10)))
-    ax.set_title(configuracion.get('titulo', 'Histograma'), pad=10)
-    ax.set_xlabel(configuracion.get('xlabel', 'Valores')); ax.set_ylabel(configuracion.get('ylabel', 'Frecuencia'))
+        ax.hist(values, bins=int(configuracion.get('bins', 10)),
+                color=configuracion.get('color', ChartTheme.PRIMARY_COLOR))
+    ax.set_title(configuracion.get('titulo', 'Histograma'), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.set_xlabel(configuracion.get('xlabel', 'Valores'), color=ChartTheme.TEXT_COLOR)
+    ax.set_ylabel(configuracion.get('ylabel', 'Frecuencia'), color=ChartTheme.TEXT_COLOR)
     return fig, ax
 
 
@@ -762,8 +880,9 @@ def plugin_box(datos, configuracion, debug=False):
         raise ValueError("Use 'data' como lista de listas o pase dict de listas (se normaliza).")
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.boxplot(data, labels=labels, patch_artist=True)
-    ax.set_title(configuracion.get('titulo', 'Diagrama de Caja'), pad=10)
-    ax.set_ylabel(configuracion.get('ylabel', 'Valores'))
+    ax.set_title(configuracion.get('titulo', 'Diagrama de Caja'), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.set_ylabel(configuracion.get('ylabel', 'Valores'), color=ChartTheme.TEXT_COLOR)
     return fig, ax
 
 
@@ -788,8 +907,9 @@ def plugin_violin(datos, configuracion, debug=False):
     ax.violinplot(dataset=data, showmeans=True, showextrema=True, showmedians=True)
     if labels:
         ax.set_xticks(range(1, len(labels) + 1)); ax.set_xticklabels(labels)
-    ax.set_title(configuracion.get('titulo', 'Diagrama de Violín'), pad=10)
-    ax.set_ylabel(configuracion.get('ylabel', 'Valores'))
+    ax.set_title(configuracion.get('titulo', 'Diagrama de Violín'), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.set_ylabel(configuracion.get('ylabel', 'Valores'), color=ChartTheme.TEXT_COLOR)
     return fig, ax
 
 
@@ -800,20 +920,36 @@ def plugin_heatmap(datos, configuracion, debug=False):
     if not (isinstance(matrix, list) and matrix and all(isinstance(r, list) for r in matrix)):
         raise ValueError("'matrix' debe ser lista de listas.")
     fig, ax = plt.subplots(figsize=(6, 5))
-    annot = bool(configuracion.get('annot', False)); cmap = configuracion.get('cmap', 'viridis')
+    annot = bool(configuracion.get('annot', False))
+    cmap = configuracion.get('cmap', 'viridis')
+    xlabels = configuracion.get('xlabels') or configuracion.get('xticklabels')
+    ylabels = configuracion.get('ylabels') or configuracion.get('yticklabels')
+
     if configuracion.get('use_seaborn', False):
         try:
             import seaborn as sns
-            sns.heatmap(matrix, annot=annot, cmap=cmap, ax=ax)
+            sns.heatmap(matrix, annot=annot, cmap=cmap, ax=ax,
+                        xticklabels=xlabels if xlabels else 'auto',
+                        yticklabels=ylabels if ylabels else 'auto')
         except Exception:
-            im = ax.imshow(matrix, cmap=cmap, aspect='auto'); plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            im = ax.imshow(matrix, cmap=cmap, aspect='auto')
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     else:
-        im = ax.imshow(matrix, cmap=cmap, aspect='auto'); plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        im = ax.imshow(matrix, cmap=cmap, aspect='auto')
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         if annot:
             for i in range(len(matrix)):
                 for j in range(len(matrix[0])):
                     ax.text(j, i, str(matrix[i][j]), ha='center', va='center', fontsize=8)
-    ax.set_title(configuracion.get('titulo', 'Mapa de Calor'), pad=10)
+        if xlabels:
+            ax.set_xticks(range(len(xlabels)))
+            ax.set_xticklabels(xlabels, rotation=45, ha='right', fontsize=ChartTheme.LABEL_SIZE)
+        if ylabels:
+            ax.set_yticks(range(len(ylabels)))
+            ax.set_yticklabels(ylabels, fontsize=ChartTheme.LABEL_SIZE)
+
+    ax.set_title(configuracion.get('titulo', 'Mapa de Calor'), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
     return fig, ax
 
 
@@ -863,7 +999,10 @@ def plugin_network(datos, configuracion, debug=False):
     node_labels = datos.get('labels', {}); directed = configuracion.get('directed', False)
     if not (isinstance(nodes, list) and isinstance(edges, list)):
         raise ValueError("'nodes' y 'edges' deben ser listas.")
-    fig, ax = plt.subplots(figsize=(8, 6)); ax.set_title(configuracion.get("titulo", "Diagrama de Red"), pad=10); ax.axis('off')
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_title(configuracion.get("titulo", "Diagrama de Red"), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.axis('off')
     G = nx.DiGraph() if directed else nx.Graph(); G.add_nodes_from(nodes); G.add_edges_from(edges)
     layout = str(configuracion.get('layout', 'spring')).lower()
     try:
@@ -897,8 +1036,10 @@ def plugin_area(datos, configuracion, debug=False):
     if 'y' not in datos or not isinstance(datos['y'], list):
         raise ValueError("Falta 'y' como lista (serie única o lista de listas).")
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.set_title(configuracion.get("titulo", "Gráfico de Área"), pad=10)
-    ax.set_xlabel(configuracion.get("xlabel", "Eje X")); ax.set_ylabel(configuracion.get("ylabel", "Eje Y"))
+    ax.set_title(configuracion.get("titulo", "Gráfico de Área"), pad=10,
+                 fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
+    ax.set_xlabel(configuracion.get("xlabel", "Eje X"), color=ChartTheme.TEXT_COLOR)
+    ax.set_ylabel(configuracion.get("ylabel", "Eje Y"), color=ChartTheme.TEXT_COLOR)
     x_data = datos.get('x'); y_data = datos['y']
     if all(isinstance(v, (int, float)) for v in y_data):
         if x_data is not None and isinstance(x_data, list) and len(x_data) == len(y_data):
@@ -953,12 +1094,11 @@ def plugin_venn(datos, configuracion, debug=False):
     if not isinstance(subsets, (tuple, list)):
         raise ValueError("'subsets' debe ser tuple/list.")
     fig, ax = plt.subplots(figsize=(6, 4)); ax.set_title(configuracion.get("titulo", "Diagrama de Venn"), pad=10)
+    set_labels = configuracion.get('set_labels') or datos.get('set_labels')
     if len(subsets) == 3:
-        set_labels = configuracion.get('set_labels', None)
         if set_labels is not None and len(set_labels) != 2: set_labels = None
         venn2(subsets=subsets, set_labels=set_labels, ax=ax, **configuracion.get('plot_config', {}))
     elif len(subsets) == 7:
-        set_labels = configuracion.get('set_labels', None)
         if set_labels is not None and len(set_labels) != 3: set_labels = None
         venn3(subsets=subsets, set_labels=set_labels, ax=ax, **configuracion.get('plot_config', {}))
     else:
@@ -976,19 +1116,26 @@ def plugin_fractal(datos, configuracion, debug=False):
         xmin, xmax = cfg.get('xmin', -2.0), cfg.get('xmax', 1.0)
         yres = cfg.get('yres', (xmax - xmin) * height / width)
         ymin, ymax = cfg.get('ymin', -yres/2), cfg.get('ymax', yres/2)
-        max_iter = int(cfg.get('max_iter', 100)); cmap = configuracion.get('cmap', 'hot')
-        img = np.zeros((height, width), dtype=np.uint16)
-        x_vals = np.linspace(xmin, xmax, width); y_vals = np.linspace(ymin, ymax, height)
-        for i in range(height):
-            for j in range(width):
-                c = complex(x_vals[j], y_vals[i]); z = 0
-                for k in range(max_iter):
-                    z = z*z + c
-                    if abs(z) > 2: img[i, j] = k; break
+        max_iter = int(cfg.get('max_iter', 100))
+        
+        # Optimización con NumPy (vectorización)
+        x = np.linspace(xmin, xmax, width)
+        y = np.linspace(ymin, ymax, height)
+        X, Y = np.meshgrid(x, y)
+        C = X + 1j * Y
+        Z = np.zeros_like(C)
+        img = np.zeros(C.shape, dtype=float)
+        
+        for k in range(max_iter):
+            mask = np.abs(Z) <= 2
+            Z[mask] = Z[mask]**2 + C[mask]
+            img[mask] += 1
+            
         fig, ax = plt.subplots(figsize=(width/100, height/100))
-        ax.imshow(img, origin='lower', extent=[xmin, xmax, ymin, ymax], cmap=cmap, **configuracion.get("plot_config", {}))
-        ax.set_title(configuracion.get("titulo", "Conjunto de Mandelbrot"), pad=10)
-        ax.set_xlabel(configuracion.get("xlabel", "Re(c)")); ax.set_ylabel(configuracion.get("ylabel", "Im(c)"))
+        ax.imshow(img, origin='lower', extent=[xmin, xmax, ymin, ymax], cmap=configuracion.get('cmap', 'magma'))
+        ax.axis('off')
+        ax.set_title(configuracion.get("titulo", "Conjunto de Mandelbrot"), 
+                     fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
         return fig, ax
     elif ftype == 'julia':
         width, height = int(cfg.get('width', 400)), int(cfg.get('height', 400))
@@ -997,49 +1144,144 @@ def plugin_fractal(datos, configuracion, debug=False):
         ymin, ymax = cfg.get('ymin', -yres/2), cfg.get('ymax', yres/2)
         max_iter = int(cfg.get('max_iter', 100))
         c_const = complex(cfg.get('c_real', -0.7), cfg.get('c_imag', 0.27015))
-        cmap = configuracion.get('cmap', 'hot')
-        img = np.zeros((height, width), dtype=np.uint8)
-        x_vals = np.linspace(xmin, xmax, width); y_vals = np.linspace(ymin, ymax, height)
-        for i in range(height):
-            for j in range(width):
-                z = complex(x_vals[j], y_vals[i])
-                for k in range(max_iter):
-                    z = z*z + c_const
-                    if abs(z) > 2: img[i, j] = k; break
+        
+        # Optimización con NumPy para Julia
+        x = np.linspace(xmin, xmax, width)
+        y = np.linspace(ymin, ymax, height)
+        X, Y = np.meshgrid(x, y)
+        Z = X + 1j * Y
+        img = np.zeros(Z.shape, dtype=float)
+        
+        for k in range(max_iter):
+            mask = np.abs(Z) <= 2
+            Z[mask] = Z[mask]**2 + c_const
+            img[mask] += 1
+            
         fig, ax = plt.subplots(figsize=(width/100, height/100))
-        ax.imshow(img, origin='lower', extent=[xmin, xmax, ymin, ymax], cmap=cmap, **configuracion.get("plot_config", {}))
-        ax.set_title(configuracion.get("titulo", "Conjunto de Julia"), pad=10)
-        ax.set_xlabel(configuracion.get("xlabel", "Re(z)")); ax.set_ylabel(configuracion.get("ylabel", "Im(z)"))
+        ax.imshow(img, origin='lower', extent=[xmin, xmax, ymin, ymax], cmap=configuracion.get('cmap', 'hot'))
+        ax.axis('off')
+        ax.set_title(configuracion.get("titulo", "Conjunto de Julia"), 
+                     fontsize=ChartTheme.TITLE_SIZE, color=ChartTheme.TEXT_COLOR, weight='bold')
         return fig, ax
     else:
         raise ValueError(f"Tipo de fractal no soportado: '{ftype}'")
 
 # Catálogo/alias para robustecer reconocimiento del LLM
 CHART_ALIASES = {
+    # Barras
     "grafico_barras_verticales": "grafico_barras_verticales",
     "barras_verticales": "grafico_barras_verticales",
     "bar": "grafico_barras_verticales",
+    "barras": "grafico_barras_verticales",
+    "grafico de barras": "grafico_barras_verticales",
+    "bar chart": "grafico_barras_verticales",
+    "bar graph": "grafico_barras_verticales",
+    # Circular / Pie
     "pie": "grafico_circular",
     "grafico_circular": "grafico_circular",
+    "circular": "grafico_circular",
+    "torta": "grafico_circular",
+    "pastel": "grafico_circular",
+    "dona": "grafico_circular",
+    "pie chart": "grafico_circular",
+    # Tabla
     "tabla": "tabla",
-    "construccion_geometrica": "construccion_geometrica",
+    "table": "tabla",
+    "matriz": "tabla",
+    "cuadro": "tabla",
+    # Árbol
     "diagrama_arbol": "diagrama_arbol",
+    "arbol": "diagrama_arbol",
+    "árbol": "diagrama_arbol",
+    "tree": "diagrama_arbol",
+    "jerarquia": "diagrama_arbol",
+    "jerarquía": "diagrama_arbol",
+    "taxonomia": "diagrama_arbol",
+    # Flujograma
     "flujograma": "flujograma",
+    "flujo": "flujograma",
+    "flowchart": "flujograma",
+    "diagrama de flujo": "flujograma",
+    # Pictograma
     "pictograma": "pictograma",
     "waffle": "pictograma",
+    "iconos": "pictograma",
+    # Dispersión
     "scatter_plot": "scatter_plot",
+    "scatter": "scatter_plot",
+    "dispersion": "scatter_plot",
+    "dispersión": "scatter_plot",
+    "diagrama de dispersion": "scatter_plot",
+    "diagrama de dispersión": "scatter_plot",
+    # Líneas
     "line_plot": "line_plot",
+    "lineas": "line_plot",
+    "líneas": "line_plot",
+    "line": "line_plot",
+    "grafico de lineas": "line_plot",
+    "gráfico de líneas": "line_plot",
+    "tendencia": "line_plot",
+    # Histograma
     "histogram": "histogram",
+    "histograma": "histogram",
+    "frecuencias": "histogram",
+    "distribucion": "histogram",
+    "distribución": "histogram",
+    # Box plot
     "box_plot": "box_plot",
+    "caja": "box_plot",
+    "bigotes": "box_plot",
+    "caja y bigotes": "box_plot",
+    "boxplot": "box_plot",
+    # Violín
     "violin_plot": "violin_plot",
+    "violin": "violin_plot",
+    "violín": "violin_plot",
+    # Mapa de calor
     "heatmap": "heatmap",
+    "calor": "heatmap",
+    "mapa de calor": "heatmap",
+    "correlacion": "heatmap",
+    "correlación": "heatmap",
+    # Contorno
     "contour_plot": "contour_plot",
+    "contorno": "contour_plot",
+    "curvas de nivel": "contour_plot",
+    # 3D
     "3d_plot": "3d_plot",
+    "3d": "3d_plot",
+    "tridimensional": "3d_plot",
+    # Red / grafo
     "network_diagram": "network_diagram",
+    "red": "network_diagram",
+    "grafo": "network_diagram",
+    "nodos": "network_diagram",
+    "diagrama de red": "network_diagram",
+    # Área
     "area_plot": "area_plot",
+    "area": "area_plot",
+    "área": "area_plot",
+    "area chart": "area_plot",
+    # Radar
     "radar_chart": "radar_chart",
+    "radar": "radar_chart",
+    "arana": "radar_chart",
+    "araña": "radar_chart",
+    "spider": "radar_chart",
+    # Venn
     "venn_diagram": "venn_diagram",
+    "venn": "venn_diagram",
+    "conjuntos": "venn_diagram",
+    "diagrama de venn": "venn_diagram",
+    # Construcción geométrica
+    "construccion_geometrica": "construccion_geometrica",
+    "geometria": "construccion_geometrica",
+    "geometría": "construccion_geometrica",
+    "figuras": "construccion_geometrica",
+    # Fractal
     "fractal": "fractal",
+    "mandelbrot": "fractal",
+    "julia": "fractal",
 }
 
 # ==============================================================================
@@ -1086,155 +1328,435 @@ def crear_grafico(tipo_grafico, datos, configuracion):
 # 4. ORQUESTADOR CON INTELIGENCIA ARTIFICIAL
 # ==============================================================================
 
-VISUAL_SPEC_TEMPLATE = """
-Eres un generador que devuelve EXCLUSIVAMENTE un objeto JSON válido con la especificación de UN (1) elemento visual.
+# ==============================================================================
+# 4. ORQUESTADOR CHAIN-OF-THOUGHT (CLASIFICADOR + GENERADORES)
+# ==============================================================================
 
-Campos requeridos:
-- "tipo_elemento": uno de: grafico_barras_verticales, grafico_circular, tabla, construccion_geometrica, diagrama_arbol,
-  flujograma, pictograma, scatter_plot, line_plot, histogram, box_plot, violin_plot, heatmap, contour_plot, 3d_plot,
-  network_diagram, area_plot, radar_chart, venn_diagram, fractal
-- "datos": objeto con los datos que requiere ese tipo.
-- "configuracion": objeto con opciones (por ejemplo "titulo").
-- "ubicacion": siempre "enunciado".
-
-Notas importantes:
-- Devuelve SOLO un JSON (sin comentarios ni texto extra).
-- Si el tipo es "flujograma", debes construir "dot_source" con lenguaje DOT, p.ej:
-  "dot_source": "digraph G {{ A->B; B->C; }}"
-- Para "tabla": "matrix" es [[enc1, enc2], [f1c1, f1c2], ...]
-- Para "venn_diagram": "subsets" debe ser longitud 3 (2 conjuntos) o 7 (3 conjuntos).
-- Para "fractal": "type" es "mandelbrot" o "julia" y "config" con parámetros.
-
-LINEAMIENTOS RÁPIDOS:
-- grafico_barras_verticales: {{ "X":[...], "Y":[...] }} (claves arbitrarias; 1 lista texto/números, 1 lista numérica)
-- grafico_circular: {{ "Etiquetas":[...], "Valores":[...] }}
-- tabla: {{ "matrix":[[enc1, enc2, ...], [fila1c1, fila1c2, ...], ...],
-          "configuracion": {{ "titulo":"...", "cellLoc":"left",
-                             "figsize":[11, 6.5],
-                             "col_widths":[0.14, 0.56, 0.30],
-                             "fontsize":9, "fill_axes":true }} }}
-- construccion_geometrica: {{ "elements":[
-    {{ "type":"point","coords":[x,y],"config":{{"label":"A"}} }},
-    {{ "type":"line","coords":[[x1,y1],[x2,y2]],"config":{{}} }},
-    {{ "type":"polygon","coords":[[x,y],...],"config":{{"facecolor":"#...","alpha":0.3}} }},
-    {{ "type":"circle","config":{{"center":[cx,cy],"radius":r,"patch_config":{{"edgecolor":"k"}}}} }},
-    {{ "type":"arrow","config":{{"start":[x1,y1],"end":[x2,y2],"patch_config":{{"arrowstyle":"->"}}}} }}
-  ]}}
-- diagrama_arbol/network_diagram: {{ "nodes":[...], "edges":[["A","B"],...], "labels":{{"A":"Raíz"}} }}
-- flujograma: {{ "dot_source": "digraph G {{ A->B; B->C; }}" }}
-- pictograma: {{ "values":{{"CatA":10,"CatB":5}}, "colors":["#...","#..."] }}
-- scatter_plot/line_plot: {{ "x":[...], "y":[...] }}
-- histogram: {{ "values":[...] }}
-- box_plot: {{ "data":[[...],[...]] }} o dict de listas
-- violin_plot: {{ "data":[[...],[...]] }} (o x/y si prefieres seaborn)
-- heatmap: {{ "matrix":[[...], [...], ...] }}
-- contour_plot: {{ "x":[...], "y":[...], "z":[[...], ...] }}
-- 3d_plot: {{ "x":[...], "y":[...], "z":[...] }} (scatter/line) o {{ "X":[[..]], "Y":[[..]], "Z":[[..]] }} (surface/wireframe)
-- area_plot: {{ "y":[...] }} o {{ "x":[...], "y":[[...],[...]] }}
-- radar_chart: {{ "labels":[...], "values":[...] }} (o lista de listas)
-- venn_diagram: {{ "subsets":(a,b,ab) }} (2 sets) o 7-tuple (3 sets)
-- fractal: {{ "type":"mandelbrot","config":{{"width":400,"height":400,"max_iter":100}} }}
-
-REGLAS:
-- Devuelve **solo** un objeto JSON, sin texto adicional.
-- Usa nombres de claves y estructura correctos para el tipo elegido.
-- Incluye "configuracion": {{"titulo":"..."}} coherente con la descripción.
-
-DESCRIPCION:
-{descripcion}
-"""
-
-def build_visual_json_with_llm(descripcion: str) -> dict:
-    """Llama al LLM para convertir una descripción textual en una especificación JSON."""
-    prompt = PromptTemplate(input_variables=["descripcion"], template=VISUAL_SPEC_TEMPLATE)
-
-    # Evita que llaves en la descripción rompan el PromptTemplate
-    descripcion_safe = _escape_braces(descripcion)
-
-    # Construye la cadena prompt -> LLM (faltaba esto)
+def classify_visual_intent(descripcion: str) -> str:
+    """Paso 1: Determina qué tipo de gráfico es el más adecuado."""
     llm = _get_llm()
+    prompt = PromptTemplate.from_template(
+        "Dada la siguiente descripción de un usuario, responde ÚNICAMENTE con el nombre técnico "
+        "del gráfico que mejor encaje. Opciones: {opciones}.\n\n"
+        "Descripción: {descripcion}\n\n"
+        "Tipo de gráfico:"
+    )
+    opciones = ", ".join(sorted(set(CHART_ALIASES.values())))
     chain = prompt | llm
+    response = chain.invoke({"descripcion": descripcion, "opciones": opciones})
+    intent = getattr(response, "content", str(response)).lower().strip().replace("`", "").replace('"', '')
+    resolved = _resolve_plugin_key(intent)
+    if resolved not in PLUGIN_REGISTRY:
+        print(f"⚠️ Clasificador: tipo '{intent}' → '{resolved}' no reconocido. Usando 'grafico_barras_verticales'.")
+        return "grafico_barras_verticales"
+    return resolved
 
-    # Invoca y extrae texto
+# Repositorio de Prompts Especializados
+SPECIALIZED_PROMPTS = {
+    "grafico_barras_verticales": """
+        Actúa como un experto en visualización de datos. Genera un JSON para un gráfico de BARRAS.
+        Formato requerido:
+        {{
+            "titulo": "Título del gráfico",
+            "categorias": ["Cat A", "Cat B", ...],
+            "valores": [10.5, 20.0, ...],
+            "xlabel": "Eje X",
+            "ylabel": "Eje Y"
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "grafico_circular": """
+        Actúa como un experto en visualización de datos. Genera un JSON para un gráfico CIRCULAR (PIE).
+        Los valores en "sizes" deben ser proporcionales (números positivos); se normalizarán automáticamente.
+        Formato requerido:
+        {{
+            "titulo": "Título del gráfico",
+            "labels": ["Segmento 1", "Segmento 2", ...],
+            "sizes": [30, 70, ...]
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "tabla": """
+        Genera una MATRIZ DE DATOS (tabla).
+        Formato requerido:
+        {{
+            "titulo": "Título de la tabla",
+            "matrix": [
+                ["Cabecera 1", "Cabecera 2"],
+                ["Fila 1 Col 1", "Fila 1 Col 2"]
+            ]
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "scatter_plot": """
+        Genera un JSON para un DIAGRAMA DE DISPERSIÓN (scatter plot).
+        Formato requerido:
+        {{
+            "titulo": "Título del gráfico",
+            "datos": {{
+                "x": [1.0, 2.5, 3.1, ...],
+                "y": [4.2, 3.8, 5.0, ...],
+                "labels": ["Punto A", "Punto B", ...]
+            }},
+            "configuracion": {{
+                "xlabel": "Variable X",
+                "ylabel": "Variable Y",
+                "color": "#1E88E5"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "line_plot": """
+        Genera un JSON para un GRÁFICO DE LÍNEAS (line plot).
+        "x" e "y" deben ser listas numéricas de la misma longitud. Formato requerido:
+        {{
+            "titulo": "Título del gráfico",
+            "datos": {{
+                "x": [2010, 2015, 2020, 2025],
+                "y": [10, 20, 15, 30]
+            }},
+            "configuracion": {{
+                "xlabel": "Año",
+                "ylabel": "Valor"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "histogram": """
+        Genera un JSON para un HISTOGRAMA de distribución de frecuencias.
+        Formato requerido:
+        {{
+            "titulo": "Título del histograma",
+            "datos": {{
+                "values": [12, 15, 18, 22, 25, 30, 28, ...]
+            }},
+            "configuracion": {{
+                "bins": 10,
+                "xlabel": "Rango de valores",
+                "ylabel": "Frecuencia",
+                "color": "#26A69A"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "box_plot": """
+        Genera un JSON para un DIAGRAMA DE CAJA Y BIGOTES (box plot).
+        Cada grupo es una lista de valores numéricos. Formato requerido:
+        {{
+            "titulo": "Título del box plot",
+            "datos": {{
+                "data": [[10, 20, 30, 25, 18], [5, 15, 22, 19, 11], ...]
+            }},
+            "configuracion": {{
+                "labels": ["Grupo A", "Grupo B", ...],
+                "ylabel": "Valores"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "heatmap": """
+        Genera un JSON para un MAPA DE CALOR (heatmap).
+        La "matrix" es una lista de listas de números. Formato requerido:
+        {{
+            "titulo": "Título del heatmap",
+            "datos": {{
+                "matrix": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+            }},
+            "configuracion": {{
+                "xlabels": ["Col1", "Col2", "Col3"],
+                "ylabels": ["Fila1", "Fila2", "Fila3"],
+                "cmap": "Blues",
+                "annot": true
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "radar_chart": """
+        Genera un JSON para un GRÁFICO DE RADAR (araña).
+        "values" es una lista de listas numéricas (una por serie) o una sola lista para una serie.
+        Debe haber tantos valores por serie como elementos en "labels". Formato requerido:
+        {{
+            "titulo": "Título del radar",
+            "datos": {{
+                "labels": ["Habilidad A", "Habilidad B", "Habilidad C", "Habilidad D"],
+                "values": [[4, 3, 5, 2], [3, 5, 2, 4]]
+            }},
+            "configuracion": {{}}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "venn_diagram": """
+        Genera un JSON para un DIAGRAMA DE VENN de 2 o 3 conjuntos.
+        "subsets" tiene 3 valores para Venn2 (A, B, A∩B) o 7 para Venn3. Formato requerido:
+        {{
+            "titulo": "Título del diagrama de Venn",
+            "datos": {{
+                "subsets": [30, 25, 10],
+                "set_labels": ["Conjunto A", "Conjunto B"]
+            }},
+            "configuracion": {{}}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "network_diagram": """
+        Genera un JSON para un DIAGRAMA DE RED (grafo de nodos y aristas).
+        Formato requerido:
+        {{
+            "titulo": "Título del diagrama",
+            "datos": {{
+                "nodes": ["Nodo1", "Nodo2", "Nodo3"],
+                "edges": [["Nodo1", "Nodo2"], ["Nodo2", "Nodo3"]]
+            }},
+            "configuracion": {{
+                "layout": "spring",
+                "node_color": "#1E88E5"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "area_plot": """
+        Genera un JSON para un GRÁFICO DE ÁREA (área bajo curva).
+        "x" e "y" deben ser listas numéricas de la misma longitud. Para área apilada, "y" es lista de listas. Formato requerido:
+        {{
+            "titulo": "Título del área",
+            "datos": {{
+                "x": [2018, 2019, 2020, 2021, 2022],
+                "y": [10, 15, 12, 18, 20]
+            }},
+            "configuracion": {{
+                "xlabel": "Año",
+                "ylabel": "Valor"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "diagrama_arbol": """
+        Genera un JSON para un DIAGRAMA DE ÁRBOL (jerarquía o taxonomía).
+        Usa nodos y aristas dirigidas padre→hijo. Formato requerido:
+        {{
+            "titulo": "Título del árbol",
+            "datos": {{
+                "nodes": ["Raíz", "Hijo1", "Hijo2", "Nieto1"],
+                "edges": [["Raíz", "Hijo1"], ["Raíz", "Hijo2"], ["Hijo1", "Nieto1"]]
+            }},
+            "configuracion": {{
+                "directed": true,
+                "layout": "dot"
+            }}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "flujograma": """
+        Genera un JSON para un FLUJOGRAMA usando sintaxis DOT (Graphviz).
+        El campo "dot_source" debe ser un string DOT válido con nodos, aristas y formas.
+        Usa digraph, rectángulos para procesos, rombos para decisiones, óvalos para inicio/fin. Formato requerido:
+        {{
+            "titulo": "Título del flujograma",
+            "datos": {{
+                "dot_source": "digraph G {{ rankdir=TB; inicio [shape=oval, label=\\"Inicio\\"]; paso1 [shape=box, label=\\"Paso 1\\"]; decision [shape=diamond, label=\\"¿Condición?\\"]; fin [shape=oval, label=\\"Fin\\"]; inicio -> paso1; paso1 -> decision; decision -> fin [label=\\"Sí\\"]; decision -> paso1 [label=\\"No\\"]; }}"
+            }},
+            "configuracion": {{}}
+        }}
+        Descripción del usuario: {descripcion}
+    """
+}
+
+def build_visual_json_with_llm(descripcion: str, error_previo: str = None, tipo_elemento: str = None) -> dict:
+    """Orquestador que usa Chain-of-Thought y soporta corrección de errores."""
+
+    # Paso 1: Clasificar solo si no se recibe tipo fijo (para no cambiar tipo entre reintentos)
+    if not tipo_elemento:
+        tipo_elemento = classify_visual_intent(descripcion)
+    
+    # Paso 2: Generar datos especializados
+    instr_base = SPECIALIZED_PROMPTS.get(
+        tipo_elemento, 
+        f"Genera un JSON para un {tipo_elemento}. " + 
+        "Debe tener 'titulo', 'datos' (con la estructura técnica de ese gráfico) y 'configuracion'."
+    )
+    
+    prompt_text = instr_base
+    if error_previo:
+        prompt_text += f"\n\n🚨 ATENCIÓN: Tu generación anterior falló con este error: {error_previo}. POR FAVOR CORRÍGELO."
+
+    llm = _get_llm()
+    prompt = PromptTemplate.from_template(prompt_text)
+    
+    descripcion_safe = _escape_braces(descripcion)
+    chain = prompt | llm
     response = chain.invoke({"descripcion": descripcion_safe})
     content = getattr(response, "content", str(response))
 
-    # Intenta parsear el primer objeto JSON de la respuesta
     try:
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if not match:
-            raise json.JSONDecodeError("No se encontró un objeto JSON en la respuesta del LLM.", content, 0)
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        print("❌ Error: La respuesta del LLM no fue un JSON válido.")
-        print("Respuesta recibida:", content)
+        # Extractor por balance de llaves: maneja strings con llaves, anidamiento y markdown
+        text = re.sub(r'```(?:json)?\s*', '', content).strip()
+        json_str = None
+        i = 0
+        while i < len(text):
+            if text[i] != '{':
+                i += 1
+                continue
+            depth = 0
+            in_string = False
+            escape_next = False
+            for j in range(i, len(text)):
+                ch = text[j]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == '\\' and in_string:
+                    escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[i:j + 1]
+                            try:
+                                json.loads(candidate)
+                                json_str = candidate
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                            break
+            if json_str:
+                break
+            i += 1
+
+        if not json_str:
+            raise ValueError("No se encontró JSON válido en la respuesta del LLM.")
+
+        data = json.loads(json_str)
+
+        # Inyectar metadatos necesarios para el motor
+        if "tipo_elemento" not in data:
+            data["tipo_elemento"] = tipo_elemento
+
+        # Normalización para plugins que esperan 'datos' separado.
+        # Solo se extraen los campos que no son metadatos del motor.
+        if "datos" not in data:
+            _meta_keys = {"tipo_elemento", "titulo", "configuracion", "ubicacion"}
+            datos_filtrados = {k: v for k, v in data.items() if k not in _meta_keys}
+            data = {
+                "tipo_elemento": tipo_elemento,
+                "titulo": data.get("titulo", "Gráfico"),
+                "datos": datos_filtrados,
+                "configuracion": data.get("configuracion", {})
+            }
+
+        # Propagar titulo a configuracion para que todos los plugins lo encuentren
+        titulo = data.get("titulo", "")
+        if titulo and "titulo" not in data.get("configuracion", {}):
+            data.setdefault("configuracion", {})["titulo"] = titulo
+
+        return data
+    except Exception as e:
+        print(f"❌ Error parseando JSON: {e}")
         raise
 
 def generar_grafico_desde_texto(descripcion: str, ruta_png=None,
                                 mostrar: bool=False, abrir_archivo: bool=False):
-    """Función principal y orquestadora."""
-    print(f"🧠 Generando especificación JSON para: '{descripcion}'...")
-    try:
-        spec = build_visual_json_with_llm(descripcion)
-        print("✅ JSON generado con éxito.")
-        print(json.dumps(spec, indent=2))
-    except Exception as e:
-        print(f"❌ Falló la generación de JSON: {e}")
-        return None, None
+    """Función principal con BUCLE DE AUTOCORRECCIÓN (Self-Healing)."""
+    print(f"🧠 Procesando: '{descripcion}'...")
 
-    print("\n🎨 Renderizando el gráfico...")
-    try:
-        buffer = crear_grafico(
-            spec.get("tipo_elemento"),
-            spec.get("datos", {}),
-            spec.get("configuracion", {})
-        )
-        if not buffer:
-            print("❌ El motor de gráficos no pudo generar una imagen.")
-            return spec, None
+    max_reintentos = 2
+    error_acumulado = None
+    spec = None
 
-        print("✅ Gráfico renderizado con éxito.")
+    # Clasificar una sola vez para que los reintentos no cambien el tipo de gráfico
+    tipo_fijo = classify_visual_intent(descripcion)
+    print(f"📊 Tipo clasificado: '{tipo_fijo}'")
 
-        # Guardar PNG si se solicitó
-        if ruta_png:
-            with open(ruta_png, "wb") as f:
-                f.write(buffer.getvalue())
-            print(f"💾 Gráfico guardado en: {ruta_png}")
+    for intento in range(max_reintentos + 1):
+        if intento > 0:
+            print(f"🔄 Reintento {intento}/{max_reintentos} por error previo...")
 
-            # Abrir con el visor por defecto del SO
-            if abrir_archivo:
-                import sys, subprocess, os
-                try:
-                    if os.name == "nt":
-                        os.startfile(ruta_png)                       # Windows
-                    elif sys.platform == "darwin":
-                        subprocess.run(["open", ruta_png], check=False)  # macOS
-                    else:
-                        subprocess.run(["xdg-open", ruta_png], check=False)  # Linux
-                except Exception as e:
-                    print(f"⚠️ No se pudo abrir el archivo automáticamente: {e}")
+        try:
+            # 1. Generar JSON (tipo_elemento fijo para todos los intentos)
+            spec = build_visual_json_with_llm(descripcion, error_previo=error_acumulado, tipo_elemento=tipo_fijo)
+            
+            # 2. Renderizar
+            print("🎨 Renderizando...")
+            buffer = crear_grafico(
+                spec.get("tipo_elemento"),
+                spec.get("datos", {}),
+                spec.get("configuracion", {})
+            )
+            
+            if not buffer:
+                raise ValueError("El motor devolvió un buffer vacío.")
 
-        # Mostrar en pantalla con Matplotlib (sin depender de archivo)
-        if mostrar:
-            try:
+            # Si llegamos aquí, éxito total
+            print("✅ ¡Éxito!")
+            
+            if ruta_png:
+                with open(ruta_png, "wb") as f:
+                    f.write(buffer.getvalue())
+                if abrir_archivo:
+                    import os, sys, subprocess
+                    if os.name == "nt": os.startfile(ruta_png)
+                    elif sys.platform == "darwin": subprocess.run(["open", ruta_png])
+                    else: subprocess.run(["xdg-open", ruta_png])
+
+            if mostrar:
                 from PIL import Image
                 import io as _io
                 img = Image.open(_io.BytesIO(buffer.getvalue()))
-                plt.figure()
-                plt.imshow(img)
-                plt.axis("off")
-                plt.show()
-            except Exception as e:
-                print(f"⚠️ No se pudo mostrar el gráfico en ventana: {e}")
+                plt.figure(); plt.imshow(img); plt.axis("off"); plt.show()
 
-        return spec, buffer
+            return spec, buffer
 
-    except Exception as e:
-        print(f"❌ Falló el renderizado del gráfico: {e}")
-        return spec, None
+        except Exception as e:
+            error_acumulado = str(e)
+            print(f"⚠️ Fallo en intento {intento}: {error_acumulado}")
+            if intento == max_reintentos:
+                print("❌ Se agotaron los reintentos.")
+                return spec, None
+
+    return spec, None
 
 # ==============================================================================
-# 5. EJEMPLO DE USO INTERACTIVO
+# 5. GENERACIÓN CREATIVA (NANO BANANA / IMAGEN AI)
+# ==============================================================================
+
+def generar_imagen_artistica(descripcion: str) -> io.BytesIO:
+    """
+    Genera una imagen directamente usando Nano Banana (Imagen 3.0).
+    Ideal para escenarios creativos donde no se requiere un gráfico de datos.
+    """
+    try:
+        print(f"🎨 Nano Banana está imaginando: '{descripcion}'...")
+        # Usamos el modelo más capaz (002) verificado en el test
+        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
+        
+        # Generar imagen
+        response = model.generate_images(
+            prompt=descripcion,
+            number_of_images=1,
+            language="auto",
+            aspect_ratio="1:1" # Podría ser configurable
+        )
+        
+        if response and response.images:
+            img_obj = response.images[0]
+            # Usar los bytes crudos directamente para el buffer
+            buf = io.BytesIO(img_obj._image_bytes)
+            buf.seek(0)
+            print("✅ Imagen generada con éxito por Nano Banana.")
+            return buf
+        else:
+            print("❌ Nano Banana no pudo generar la imagen.")
+            return None
+    except Exception as e:
+        print(f"❌ Error en la generación creativa: {e}")
+        return None
+
+# ==============================================================================
+# 6. EJEMPLO DE USO INTERACTIVO
 # ==============================================================================
 if __name__ == '__main__':
     # Bucle infinito para mantener el programa corriendo
