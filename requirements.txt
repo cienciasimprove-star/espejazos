@@ -18,3 +18,4 @@ langchain-google-vertexai
 pywaffle
 seaborn
 pydot
+python-dotenv
