@@ -3,8 +3,14 @@ streamlit
 pandas
 python-docx
 google-cloud-aiplatform
+google-cloud-storage
+google-generativeai
+openai
+anthropic
+python-dotenv
 Pillow
 openpyxl
+PyPDF2
 
 # --- Motor de Gráficos (graficos_plugins.py) ---
 numpy
@@ -18,3 +24,5 @@ langchain-google-vertexai
 pywaffle
 seaborn
 pydot
+staticmap
+requests

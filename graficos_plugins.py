@@ -1166,8 +1166,131 @@ def plugin_fractal(datos, configuracion, debug=False):
     else:
         raise ValueError(f"Tipo de fractal no soportado: '{ftype}'")
 
+# ==============================================================================
+# 2.B PLUGINS ESPECIALES: MAPAS E INFOGRAFÍAS (SVG)
+# ==============================================================================
+
+@register_chart("mapa", "map")
+def plugin_mapa(datos, configuracion):
+    """
+    Renderiza un mapa geográfico real usando tiles de OpenStreetMap (vía staticmap).
+    """
+    from staticmap import StaticMap, CircleMarker
+    import io
+
+    # Configuraciones básicas
+    width = int(configuracion.get("width", 800))
+    height = int(configuracion.get("height", 600))
+    zoom = datos.get("zoom") # Opcional, staticmap auto-calcula si hay marcadores
+    center = datos.get("center") # [lon, lat] opcional
+    
+    # Crear el mapa (Tile server por defecto es OSM)
+    m = StaticMap(width, height)
+    
+    marcadores = datos.get("marcadores", [])
+    has_markers = False
+    
+    for mk in marcadores:
+        try:
+            # staticmap espera [lon, lat] o separados
+            lon = float(mk.get("lon", 0))
+            lat = float(mk.get("lat", 0))
+            color = mk.get("color", "red")
+            size = int(mk.get("size", 8))
+            
+            marker = CircleMarker((lon, lat), color, size)
+            m.add_marker(marker)
+            has_markers = True
+        except Exception as e:
+            print(f"Error parseando marcador: {e}")
+
+    try:
+        if zoom and center:
+            image = m.render(zoom=int(zoom), center=center)
+        elif has_markers:
+            image = m.render() 
+        else:
+            # Mapa global por defecto si no hay nada
+            image = m.render(zoom=1, center=[0,0])
+            
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        print(f"Error renderizando StaticMap: {e}")
+        from PIL import Image, ImageDraw
+        img = Image.new('RGB', (width, height), color=(255, 230, 230))
+        ImageDraw.Draw(img).text((20, height//2), f"Error de conexión al servidor de mapas.\nDetalle: {e}", fill=(255, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+@register_chart("infografia", "infografía", "svg")
+def plugin_infografia(datos, configuracion):
+    """
+    Lee un archivo SVG, reemplaza las variables {{clave}} y exporta a PNG.
+    Garantiza exactitud científica usando plantillas validadas.
+    """
+    import os
+    import tempfile
+    
+    plantilla_nombre = datos.get("plantilla", "default")
+    svg_path = os.path.join(os.path.dirname(__file__), "assets", "svgs", f"{plantilla_nombre}.svg")
+    
+    if not os.path.exists(svg_path):
+        from PIL import Image, ImageDraw
+        img = Image.new('RGB', (800, 600), color=(255, 230, 230))
+        draw = ImageDraw.Draw(img)
+        draw.text((50, 300), f"Falta plantilla SVG: assets/svgs/{plantilla_nombre}.svg", fill=(255, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+        
+    try:
+        with open(svg_path, 'r', encoding='utf-8') as f:
+            svg_content = f.read()
+            
+        reemplazos = datos.get("reemplazos", {})
+        for k, v in reemplazos.items():
+            # Busca y reemplaza literal {{clave}}
+            svg_content = svg_content.replace(f"{{{{{k}}}}}", str(v))
+            
+        # Archivo temporal para convertir
+        fd, temp_svg = tempfile.mkstemp(suffix='.svg')
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(svg_content)
+            
+        from svglib.svglib import svg2rlg
+        from reportlab.graphics import renderPM
+        
+        drawing = svg2rlg(temp_svg)
+        buf = io.BytesIO()
+        renderPM.drawToFile(drawing, buf, fmt="PNG")
+        
+        os.remove(temp_svg) # Limpieza
+        
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        print(f"Error renderizando SVG: {e}")
+        from PIL import Image, ImageDraw
+        img = Image.new('RGB', (800, 200), color=(255, 200, 200))
+        ImageDraw.Draw(img).text((20, 50), f"Error de renderizado SVG: {e}", fill=(255, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
 # Catálogo/alias para robustecer reconocimiento del LLM
 CHART_ALIASES = {
+    # Mapas / Infografías (AGREGADOS)
+    "mapa": "mapa",
+    "map": "mapa",
+    "infografia": "infografia",
+    "infografía": "infografia",
     # Barras
     "grafico_barras_verticales": "grafico_barras_verticales",
     "barras_verticales": "grafico_barras_verticales",
@@ -1353,6 +1476,42 @@ def classify_visual_intent(descripcion: str) -> str:
 
 # Repositorio de Prompts Especializados
 SPECIALIZED_PROMPTS = {
+    "mapa": """
+        Actúa como un experto cartógrafo geográfico. Genera un JSON para renderizar un MAPA SATELITAL REAL.
+        MUY IMPORTANTE: Usa latitudes y longitudes reales (ej. Colombia = lat: 4.5, lon: -74). 
+        El array "marcadores" debe tener objetos con "lat" (Y), "lon" (X) geográficos, "color" (english: red, blue, green), y un "size" opcional (ej. 10).
+        Si no envías centro ni zoom, el mapa se auto-centrará para abarcar todos los marcadores.
+        Formato requerido:
+        {{
+            "titulo": "Título del Mapa",
+            "datos": {{
+                "marcadores": [
+                    {{"lat": 4.6097, "lon": -74.0817, "color": "red", "size": 15}},
+                    {{"lat": 10.9638, "lon": -74.7963, "color": "blue"}}
+                ]
+            }},
+            "configuracion": {{}}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
+    "infografia": """
+        Actúa como un diseñador instruccional. Genera un JSON para una INFOGRAFÍA basada en SVG.
+        La "plantilla" debe ser el identificador del esquema (ej. 'ciclo_agua', 'celula').
+        El objeto "reemplazos" debe tener llaves exactas con las palabras que se inyectarán en la plantilla.
+        Formato requerido:
+        {{
+            "titulo": "Título de la Infografía",
+            "datos": {{
+                "plantilla": "ciclo_agua",
+                "reemplazos": {{
+                    "etiqueta_A": "Evaporación",
+                    "etiqueta_B": "Precipitación"
+                }}
+            }},
+            "configuracion": {{}}
+        }}
+        Descripción del usuario: {descripcion}
+    """,
     "grafico_barras_verticales": """
         Actúa como un experto en visualización de datos. Genera un JSON para un gráfico de BARRAS.
         Formato requerido:

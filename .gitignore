@@ -1,0 +1,22 @@
+# Variables de entorno (contienen secrets)
+.env
+
+# Archivos de datos grandes (no deben ir al repo)
+*.xlsx
+*.pkl
+*.bin
+*.docx
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos de prueba / debug
+test_*.py
+list_models.py
+manual_extracted.txt

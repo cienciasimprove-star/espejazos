@@ -5,18 +5,46 @@ import base64
 import pandas as pd
 from docx import Document
 from docx.shared import Inches
+import PyPDF2
 # Importa la librería de Vertex AI
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, Image as VertexImage, GenerationConfig
 import json
 import re
 import random # Necesario para la clave aleatoria
+import openai
+import anthropic
+import google.generativeai as genai
 from google.cloud import storage
 import os
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env
 load_dotenv()
+# --- VALIDACIÓN DE CONTRASEÑA ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state.get("password") == os.environ.get("APP_PASSWORD", ""):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.warning("⚠️ Esta aplicación es de uso exclusivo.")
+    st.text_input(
+        "Por favor, introduce la clave de acceso:", type="password", on_change=password_entered, key="password"
+    )
+    if "password_correct" in st.session_state:
+        st.error("😕 Contraseña incorrecta")
+    return False
+
+if not check_password():
+    st.stop()
 
 # --- IMPORTACIÓN CLAVE ---
 # Importamos las TRES funciones que necesitamos
@@ -46,6 +74,88 @@ GCP_PROJECT = os.environ.get("GCP_PROJECT", "espejazos")
 GCP_LOCATION = os.environ.get("GCP_LOCATION", "global") # <--- Cambiado a 'global' para soporte Gemini 3
 vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
 
+# --- ENRUTADOR MULTI-MODELO (Vertex, Gemini API, OpenAI) ---
+def call_llm_router(partes_texto, imagenes, model_name, json_mode=False):
+    """Router universal para enviar peticiones."""
+    proveedor = st.session_state.get("proveedor_llm", "🏢 Vertex AI (Nativo)")
+    prompt_completo = "\n\n".join(partes_texto)
+    
+    if proveedor == "🏢 Vertex AI (Nativo)":
+        model = GenerativeModel(model_name)
+        partes = list(partes_texto)
+        for img in imagenes:
+            img_bytes = img.getvalue() if hasattr(img, 'getvalue') else img
+            partes.append(VertexImage.from_bytes(img_bytes))
+        config = {"response_mime_type": "application/json"} if json_mode else {}
+        response = model.generate_content(partes, generation_config=config)
+        return response.text
+        
+    elif proveedor == "🔑 Google Gemini (API Key)":
+        api_key = st.session_state.get("api_key_gemini", "").strip()
+        if not api_key: return '{"error": "Falta la API Key de Gemini"}'
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        partes = list(partes_texto)
+        if imagenes:
+            from PIL import Image as PILImage
+            for img in imagenes:
+                img_bytes = img.getvalue() if hasattr(img, 'getvalue') else img
+                partes.append(PILImage.open(io.BytesIO(img_bytes)))
+        config = genai.types.GenerationConfig(response_mime_type="application/json") if json_mode else genai.types.GenerationConfig()
+        response = model.generate_content(partes, generation_config=config)
+        return response.text
+        
+    elif proveedor == "🔑 OpenAI (API Key)":
+        api_key = st.session_state.get("api_key_openai", "").strip()
+        if not api_key: return '{"error": "Falta la API Key de OpenAI"}'
+        client = openai.OpenAI(api_key=api_key)
+        
+        content = [{"type": "text", "text": prompt_completo}]
+        for img in imagenes:
+            img_bytes = img.getvalue() if hasattr(img, 'getvalue') else img
+            b64_img = base64.b64encode(img_bytes).decode('utf-8')
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
+            })
+            
+        messages = [{"role": "user", "content": content}]
+        kwargs = {"model": model_name, "messages": messages}
+        # Para OpenAI, o1-mini o o1-preview no soportan json_object de forma nativa en todo momento, omitiremos si es o1.
+        if json_mode and "o1" not in model_name:
+            kwargs["response_format"] = {"type": "json_object"}
+            
+        response = client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+        
+    elif proveedor == "🔑 Anthropic Claude (API Key)":
+        api_key = st.session_state.get("api_key_anthropic", "").strip()
+        if not api_key: return '{"error": "Falta la API Key de Anthropic"}'
+        client = anthropic.Anthropic(api_key=api_key)
+        
+        content = []
+        for img in imagenes:
+            img_bytes = img.getvalue() if hasattr(img, 'getvalue') else img
+            b64_img = base64.b64encode(img_bytes).decode('utf-8')
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": b64_img,
+                }
+            })
+        content.append({"type": "text", "text": prompt_completo})
+            
+        messages = [{"role": "user", "content": content}]
+        
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=4096,
+            messages=messages
+        )
+        return response.content[0].text
+        
 # --- 1. FUNCIONES DEL NÚCLEO LLM (MULTIMODO) ---
 
 def limpiar_json_robustez(raw_text):
@@ -102,22 +212,24 @@ def limpiar_json_robustez(raw_text):
 
     return None
 
+@st.cache_data(ttl=3600)
+def cargar_base_improve():
+    """Carga y cachea la base de datos Excel local de Improve para búsquedas."""
+    try:
+        return pd.read_excel("202603041401_contextos_reindexados.xlsx")
+    except Exception as e:
+        print(f"Error cargando BD Improve: {e}")
+        return None
+
 def analizar_adn_llm(inputs, model_name):
     """
     Analiza una o varias fuentes (imágenes/texto) para extraer el ADN psicométrico.
     """
-    model = GenerativeModel(model_name)
-    partes = ["Eres un experto psicómetra. Tu tarea es analizar los siguientes ítems para extraer su ADN estructural."]
-    
-    if inputs.get("imagenes"):
-        for img in inputs["imagenes"]:
-            img_bytes = img.getvalue() if hasattr(img, 'getvalue') else img
-            partes.append(VertexImage.from_bytes(img_bytes))
-    
+    partes_texto = ["Eres un experto psicómetra. Tu tarea es analizar los siguientes ítems para extraer su ADN estructural."]
     if inputs.get("texto"):
-        partes.append(f"Texto de referencia: {inputs['texto']}")
+        partes_texto.append(f"Texto de referencia: {inputs['texto']}")
         
-    partes.append("""
+    partes_texto.append("""
     Analiza y devuelve en formato JSON:
     1. ESTRUCTURAS: Patrones comunes en el enunciado y opciones (ej. negaciones, tablas, comparaciones).
     2. QUÉ EVALÚA: Competencia profunda y evidencia detectada.
@@ -127,9 +239,11 @@ def analizar_adn_llm(inputs, model_name):
     Responde solo con el JSON.
     """)
     
+    imagenes = inputs.get("imagenes", [])
+    
     try:
-        response = model.generate_content(partes, generation_config={"response_mime_type": "application/json"})
-        return response.text
+        response_text = call_llm_router(partes_texto, imagenes, model_name, json_mode=True)
+        return response_text
     except Exception as e:
         st.error(f"Error analizando ADN: {e}")
         return None
@@ -138,7 +252,6 @@ def generar_ideas_llm(taxonomia_dict, model_name):
     """
     Genera 3 ideas creativas basadas en la taxonomía y las devuelve en formato JSON.
     """
-    model = GenerativeModel(model_name)
     tax_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
     prompt = f"""
     Basado en esta taxonomía:
@@ -149,30 +262,46 @@ def generar_ideas_llm(taxonomia_dict, model_name):
     Ejemplo: {{"ideas": ["Idea 1...", "Idea 2...", "Idea 3..."]}}
     """
     try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(response.text).get("ideas", [])
+        response_text = call_llm_router([prompt], [], model_name, json_mode=True)
+        return json.loads(response_text).get("ideas", [])
     except Exception as e:
         return [f"Error generando ideas: {e}"]
+
+def generar_contexto_base_llm(taxonomia_dict, idea_usuario, model_name):
+    """
+    Genera un texto de contexto base para un bloque de preguntas.
+    """
+    tax_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
+    prompt = f"""
+    Eres un experto redactor de evaluaciones educativas.
+    
+    Basado en los siguientes parámetros:
+    {tax_texto}
+    
+    Y en esta idea o tema propuesto:
+    "{idea_usuario}"
+    
+    Redacta un CONTEXTO BASE (una lectura, caso de estudio, situación o texto informativo) 
+    que servirá como base para crear entre 2 y 7 preguntas de selección múltiple.
+    El texto debe ser riguroso, interesante, adecuado para el grado especificado y contener 
+    suficiente información para formular múltiples preguntas.
+    
+    Responde ÚNICAMENTE con el texto del contexto. No incluyas introducciones ni las preguntas.
+    """
+    try:
+        response_text = call_llm_router([prompt], [], model_name, json_mode=False)
+        return response_text.strip()
+    except Exception as e:
+        return f"Error generando contexto: {e}"
 
 def generar_item_llm(modo, inputs, taxonomia_dict, model_name, similitud="Alta", feedback_auditor=""):
     """
     GENERADOR UNIVERSAL: Maneja Nuevo, Inspirado y Espejo.
-    Genera el ítem, pidiendo descripciones de gráficos en LENGUAJE NATURAL PURO.
     """
-    model = GenerativeModel(model_name)
     taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
     clave_aleatoria = random.choice(['A', 'B', 'C', 'D'])
 
-    # Preparar partes multimedia
-    partes = []
-    if inputs.get("imagenes"):
-        for img in inputs["imagenes"]:
-            try:
-                img_bytes = img.getvalue() if hasattr(img, 'getvalue') else img
-                partes.append(VertexImage.from_bytes(img_bytes))
-            except Exception as e:
-                st.warning(f"No se pudo procesar una de las imágenes: {e}")
-    
+    imagenes = inputs.get("imagenes", [])
     contexto_ref = inputs.get("texto", "")
 
     # Sección de feedback del auditor
@@ -185,16 +314,13 @@ def generar_item_llm(modo, inputs, taxonomia_dict, model_name, similitud="Alta",
         --- VUELVE A GENERAR EL ÍTEM CORRIGIENDO ESTO ---
         """
 
-    # SECCIONES DE PROMPT DINÁMICAS SEGÚN MODO
     instrucciones_modo = ""
     if modo == "✨ Nuevo Ítem":
         instrucciones_modo = f"""
         Tu objetivo es crear un ítem DESDE CERO basado en este concepto inicial: "{contexto_ref}".
         Usa tu creatividad pedagógica para diseñar una situación auténtica.
-
         --- ANÁLISIS COGNITIVO OBLIGATORIO (Tu paso 1) ---
         Basado en la taxonomía (Evidencia, Afirmación, Competencia), define la Tarea Cognitiva exacta que el ítem debe evaluar.
-        
         --- CONSTRUCCIÓN DEL ÍTEM (Tu paso 2) ---
         - ENUNCIADO: Debe ser claro y **NO** usar jerarquías ("más", "mejor", "principalmente").
         - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
@@ -214,56 +340,63 @@ def generar_item_llm(modo, inputs, taxonomia_dict, model_name, similitud="Alta",
         filtro_similitud = {
             "Alta": "CLONACIÓN ESTRICTA: Cambia solo datos numéricos y nombres propios. Mantén estructura y orden exacto.",
             "Media": "CAMBIO CONTEXTUAL: Cambia el escenario y representación de datos. Mantén la lógica de resolución.",
-            "Baja": "REINVENCIÓN ESENCIAL: El ítem debe lucir visualmente muy diferente. Puedes variar el orden de las ideas, pero DEBE evaluar la misma habilidad y usar el mismo esqueleto sintáctico profundo."
+            "Baja": """REINVENCIÓN TOTAL — Lee con atención estas reglas, son OBLIGATORIAS e INNEGOCIABLES:
+        1. ESCENARIO COMPLETAMENTE DIFERENTE: Si el original habla de ventas/sucursales, el nuevo debe tratar un tema distinto (ej. temperaturas, alturas, tiempos, puntajes, poblaciones). NUNCA uses el mismo dominio.
+        2. ENTIDADES DIFERENTES: Si el original usa etiquetas P/Q/R/S o nombres de personas/ciudades/empresas, usa etiquetas y nombres completamente distintos.
+        3. VALORES NUMÉRICOS COMPLETAMENTE DIFERENTES: Ningún valor numérico del original (ni en el enunciado, ni en las opciones, ni en el gráfico) puede aparecer en el nuevo ítem. Los valores de las opciones deben calcularse desde cero a partir del nuevo escenario inventado.
+        4. REDACCIÓN DIFERENTE: No copies ni parafrasees frases del original. El enunciado debe estar redactado de forma completamente independiente.
+        5. LO ÚNICO QUE SE CONSERVA: La habilidad cognitiva evaluada (ej. calcular rango estadístico) y el esqueleto lógico abstracto (ej. leer datos de una gráfica y aplicar una operación). Todo lo demás cambia."""
         }
         instrucciones_modo = f"""
-        Eres un experto en evaluación educativa, con especialización en el diseño de ítems para pruebas estandarizadas de alto impacto, como la prueba Saber 11 en Colombia. Tu misión es crear una pregunta espejo que sea un clon psicométrico de la pregunta original. Esto significa que, aunque se aplique a un contexto nuevo, debe evaluar exactamente la misma habilidad, con el mismo formato y nivel de dificultad.
-
-        **Shell Cognitivo (Pregunta Original):**
-        Analiza la estructura lógica y la "Tarea Cognitiva" de la pregunta en la IMAGEN ADJUNTA o el texto de referencia.
-        - Si la pregunta original usa una tabla o gráfico, tu ítem espejo también debería usar uno.
-        - **¡IMPORTANTE!** Si las *opciones de respuesta* en la imagen original son gráficas o tablas, debes replicar esa estructura para las opciones del ítem espejo.
-        2. Análisis de la pregunta modelo
-
-        Identifica la habilidad cognitiva (p. ej., inferencia, comprensión literal, vocabulario).
-        Observa el formato (cita breve, expresión subrayada, pregunta abierta, etc.).
-        Revisa el tipo de distractores (antónimos, conceptos afines, distractores temáticos).
-          
-        **¡INSTRUCCIÓN CRÍTICA DE SIMILITUD! ({similitud})**
-            Regla: {filtro_similitud.get(similitud)}
-            1.  **NO CAMBIES LA ESTRUCTURA**: Si la pregunta usa una tabla, tu ítem espejo debe usar una tabla con la MISMA ESTRUCTURA (mismas columnas y filas).
-            2.  **DEBES CAMBIAR**:
-                - Los **valores numéricos** 
-                - Los **nombres ficticios**
-                - Los **contextos**
-            3. Creación de la pregunta espejo
-            Sobre el contexto nuevo, elabora una pregunta que:
-            Evalúe la misma competencia y evidencia, con igual nivel de dificultad.
-            Repita el formato estructural.
-            Garantice una respuesta correcta única y clara; los distractores deben ser plausibles, pero inequívocamente incorrectos.
-
-        **Contexto Adicional del Usuario (Tema del ítem nuevo):**
-        {contexto_ref}
-
-        --- ANÁLISIS COGNITIVO OBLIGATORIO (Tu paso 1) ---
-        Basado en la taxonomía (Evidencia, Afirmación, Competencia), define la Tarea Cognitiva exacta que el ítem espejo debe evaluar.
-        
-        --- CONSTRUCCIÓN DEL ÍTEM (Tu paso 2) ---
-        Basado en tu análisis, construye el ítem.
-        - ENUNCIADO: Debe ser claro y **NO** usar jerarquías ("más", "mejor", "principalmente").
+        Eres un experto en evaluación educativa.
+        Se te entrega el ítem original (en texto y/o imagen adjunta).
+        **Contexto Adicional del Usuario (Tema sugerido para el nuevo ítem, si aplica):**
+        {contexto_ref if contexto_ref else "No se especificó tema — inventa uno completamente diferente al original."}
+        **Regla de Similitud — SIGUE ESTO AL PIE DE LA LETRA:**
+        {filtro_similitud.get(similitud)}
         - CLAVE: La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
         - DISTRACTORES: Plausibles, basados en errores comunes de la Tarea Cognitiva. Deben tener la redacción "El estudiante podría escoger la opción XX porque... Sin embargo esto es incorrecto porque..."
-        - DIFERENCIAS CON EL ITEM INICIAL: *CRITICO* NO se puede usar ninguno de los valores numéricos del ítem inicial. Deben ser totalmente diferentes.
+        """
+    elif modo == "🧩 Generación en Contexto (Bloques)":
+        instrucciones_modo = f"""
+        Estás en la modalidad de GENERACIÓN DE BLOQUES EN CONTEXTO.
+        A continuación, se te entrega todo el material de lectura (CONTEXTO BASE) y la directriz para redactar la pregunta (INSTRUCCIÓN ESPECÍFICA).
+
+        *** INICIO DEL MATERIAL DE TRABAJO ***
+        {contexto_ref}
+        *** FIN DEL MATERIAL DE TRABAJO ***
+
+        Tu misión es redactar ÚNICAMENTE el Enunciado y las 4 Opciones de Respuesta para UNA sola pregunta que dependa enteramente del Contexto Base entregado arriba.
+        
+        --- REGLAS DE ORO ---
+        1. **DEPENDE DEL CONTEXTO ESTRICTAMENTE:** La pregunta formulada DEBE derivarse de la lectura o caso entregado en el Contexto Base. Evalúa lo que dice la INSTRUCCIÓN ESPECÍFICA aplicándolo a esa lectura.
+        2. **NO REPITAS EL CONTEXTO:** Asume que el estudiante ya tiene el Contexto Base impreso arriba de la pregunta. TU ENUNCIADO DEBE IR DIRECTO A LA INTERROGANTE (ej. "Teniendo en cuenta el caso anterior, ¿qué sucedería si...?"). NUNCA transcribas ni repitas el texto del contexto.
+        3. **CLAVE:** La respuesta correcta DEBE ser la opción **{clave_aleatoria}**.
+        4. **DISTRACTORES:** Deben basarse en errores plausibles o malas interpretaciones de la lectura específica. Redacción: "El estudiante podría escoger la opción XX porque... Sin embargo esto es incorrecto porque..."
         """
 
     prompt_final = f"""
     Eres un experto en psicometría educativa (estilo Saber 11).
     {instrucciones_modo}
     {seccion_feedback}
-    
+
     **Taxonomía Requerida (Tu Guía):**
     {taxonomia_texto}
-    
+
+    --- REGLAS DE CONSTRUCCIÓN OBLIGATORIAS (APLICAN A TODOS LOS MODOS) ---
+    Estas reglas son INNEGOCIABLES. Incumplir cualquiera causará rechazo automático.
+
+    1. ANONIMATO ESTRICTO: No uses nombres de personas reales, marcas comerciales, instituciones identificables, políticos, celebridades ni lugares que puedan asociarse a una persona o entidad real. Usa nombres ficticios genéricos (ej. "Estudiante A", "Empresa X", "Ciudad del Norte").
+    2. SIN CONTENIDO SENSIBLE: Prohíbido abordar temas de religión, política, sexualidad, género, etnicidad, violencia, ideologías o cualquier tema que pueda generar controversia o afectar la sensibilidad del estudiante.
+    3. NEGACIONES CON FORMATO: Si el enunciado requiere una negación, escríbela obligatoriamente en MAYÚSCULA Y NEGRITA. Ejemplo correcto: "¿Cuál de las siguientes afirmaciones **NO** es correcta?". Nunca uses "no" en minúscula dentro de una pregunta si es la negación principal.
+    4. SIN COMBINACIONES PROHIBIDAS EN OPCIONES: Las opciones NO pueden incluir enunciados tipo "Todas las anteriores", "Ninguna de las anteriores", "A y B son correctas", "Tanto A como C" ni variantes similares.
+    5. OPCIONES SIN PISTAS FORMALES — La clave NO debe ser identificable por su forma. Verifica que:
+       a) Todas las opciones tengan longitud similar (ninguna opción puede ser notoriamente más larga que las demás).
+       b) Todas las opciones usen el mismo registro de lenguaje (todas técnicas o todas coloquiales, nunca mezclado).
+       c) Todas las opciones tengan la misma estructura gramatical (si una empieza con verbo, todas deben empezar con verbo).
+       d) Ninguna opción repita frases tomadas directamente del enunciado.
+       e) Ninguna opción use adverbios absolutos como "siempre", "nunca", "jamás", "completamente", "todos", "ninguno".
+
     --- INSTRUCCIONES DE SALIDA PARA GRÁFICO (ENUNCIADO Y OPCIONES) ---
     ¡INSTRUCCIÓN CRÍTICA! Para los gráficos, NO debes generar el JSON.
     En su lugar, proporciona una descripción detallada en LENGUAJE NATURAL de lo que el gráfico debe mostrar.
@@ -271,9 +404,6 @@ def generar_item_llm(modo, inputs, taxonomia_dict, model_name, similitud="Alta",
     Si el elemento (enunciado u opción) NO necesita un gráfico, usa "NO" y "N/A".
     Si SÍ necesita un gráfico, usa "SÍ" y escribe la descripción.
     
-    Ejemplo de descripción: "Una tabla de 3 columnas y 2 filas. Las columnas son 'País', 'Capital', 'Población'. La primera fila es 'Colombia', 'Bogotá', '8M'. La segunda es 'Argentina', 'Buenos Aires', '3M'."
-    Otro ejemplo: "Un gráfico de barras verticales simple con 3 barras. El eje X tiene las etiquetas 'A', 'B', 'C'. El eje Y (valores) tiene '10', '20', '15'."
-
     --- FORMATO DE SALIDA OBLIGATORIO (JSON VÁLIDO) ---
     Responde ÚNICAMENTE con el objeto JSON. No incluyas ```json.
     {{
@@ -282,44 +412,30 @@ def generar_item_llm(modo, inputs, taxonomia_dict, model_name, similitud="Alta",
       "justificacion_clave": "Razón por la que la clave es correcta...",
       
       "grafico_necesario_enunciado": "SÍ",
-      "descripcion_texto_grafico_enunciado": "Una tabla simple. La primera fila es el encabezado con 'País' y 'Capital'. La segunda fila tiene 'Colombia' y 'Bogotá'.",
+      "descripcion_texto_grafico_enunciado": "Una tabla simple. La primera fila es el encabezado con 'País' y 'Capital'.",
       
       "opciones": {{
         "A": {{
           "texto": "Ver gráfico A",
           "grafico_necesario": "SÍ",
-          "descripcion_texto_grafico": "Un gráfico de barras verticales simple. El eje X tiene dos categorías: 'X' y 'Y'. Los valores del eje Y son 5 para 'X' y 10 para 'Y'."
+          "descripcion_texto_grafico": "Un gráfico de barras verticales simple."
         }},
-        "B": {{
-          "texto": "Texto de la Opción B (sin gráfico)",
-          "grafico_necesario": "NO",
-          "descripcion_texto_grafico": "N/A"
-        }},
-        "C": {{
-          "texto": "Texto de la Opción C",
-          "grafico_necesario": "NO",
-          "descripcion_texto_grafico": "N/A"
-        }},
-        "D": {{
-          "texto": "Texto de la Opción D",
-          "grafico_necesario": "NO",
-          "descripcion_texto_grafico": "N/A"
-        }}
+        "B": {{"texto": "B", "grafico_necesario": "NO", "descripcion_texto_grafico": "N/A"}},
+        "C": {{"texto": "C", "grafico_necesario": "NO", "descripcion_texto_grafico": "N/A"}},
+        "D": {{"texto": "D", "grafico_necesario": "NO", "descripcion_texto_grafico": "N/A"}}
       }},
-      
       "justificaciones_distractores": [
-        {{ "opcion": "A", "justificacion": "Justificación para A..." }},
-        {{ "opcion": "B", "justificacion": "Justificación para B..." }},
-        {{ "opcion": "C", "justificacion": "Justificación para C..." }},
-        {{ "opcion": "D", "justificacion": "Justificación para D..." }}
+        {{ "opcion": "A", "justificacion": "A..." }},
+        {{ "opcion": "B", "justificacion": "B..." }},
+        {{ "opcion": "C", "justificacion": "C..." }},
+        {{ "opcion": "D", "justificacion": "D..." }}
       ]
     }}
     """
-    partes.append(prompt_final)
 
     try:
-        response = model.generate_content(partes, generation_config={"response_mime_type": "application/json"})
-        return limpiar_json_robustez(response.text)
+        response_text = call_llm_router([prompt_final], imagenes, model_name, json_mode=True)
+        return limpiar_json_robustez(response_text)
     except Exception as e:
         st.error(f"Error en generación: {e}")
         return None
@@ -329,7 +445,6 @@ def refinar_item_llm(item_json_actual, feedback_usuario, taxonomia_dict, model_n
     """
     REFINADOR: Toma un ítem existente y lo mejora basándose en feedback.
     """
-    model = GenerativeModel(model_name)
     tax_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
     
     prompt = f"""
@@ -354,8 +469,8 @@ def refinar_item_llm(item_json_actual, feedback_usuario, taxonomia_dict, model_n
     """
     
     try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return limpiar_json_robustez(response.text)
+        response_text = call_llm_router([prompt], [], model_name, json_mode=True)
+        return limpiar_json_robustez(response_text)
     except Exception as e:
         st.error(f"Error en refinamiento: {e}")
         return None
@@ -368,7 +483,13 @@ def cargar_item_en_editor(item_json_texto):
         datos_obj = json.loads(item_json_texto)
         st.session_state['resultado_json_obj'] = datos_obj
         
-        st.session_state.editable_pregunta = datos_obj.get("pregunta_espejo", "")
+        pregunta_generada = datos_obj.get("pregunta_espejo", "")
+        # Purgar el contexto si el LLM lo repitió accidentalmente en el enunciado
+        ctx = st.session_state.get("contexto_compartido_texto", "")
+        if ctx and len(ctx) > 20 and ctx in pregunta_generada:
+            pregunta_generada = pregunta_generada.replace(ctx, "").strip()
+            
+        st.session_state.editable_pregunta = pregunta_generada
         st.session_state.editable_clave = datos_obj.get("clave", "")
         st.session_state.editable_just_clave = datos_obj.get("justificacion_clave", "")
 
@@ -404,10 +525,7 @@ def cargar_item_en_editor(item_json_texto):
 def generar_descripcion_grafico_logico_llm(pregunta, opciones_texto, seccion, taxonomia_dict, model_name):
     """
     Genera una descripción data-completa del gráfico para modo lógico (JSON/Plot).
-    Incluye: tipo de gráfico, todos los datos numéricos, etiquetas, ejes y título.
-    Esta descripción se pasa a build_visual_json_with_llm para generar el JSON real.
     """
-    model = GenerativeModel(model_name)
     tax_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
 
     prompt = f"""
@@ -424,6 +542,8 @@ def generar_descripcion_grafico_logico_llm(pregunta, opciones_texto, seccion, ta
 
     --- REGLAS OBLIGATORIAS ---
     1. Elige el tipo de gráfico más apropiado para el concepto evaluado.
+       - Si es geográfico, prefiere `mapa` (indicando posiciones x,y relativas o marcadores).
+       - Si es un proceso biológico/científico estándar (ej. ciclo del agua), prefiere `infografia` e indica las palabras clave a reemplazar.
     2. Inventa datos COHERENTES con el contexto del ítem (datos verosímiles, no arbitrarios).
     3. La descripción debe incluir: tipo exacto, título, todos los valores numéricos con sus etiquetas,
        nombres de los ejes, unidades de medida y cualquier detalle necesario para construir el gráfico
@@ -439,8 +559,8 @@ def generar_descripcion_grafico_logico_llm(pregunta, opciones_texto, seccion, ta
     """
 
     try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        data = json.loads(limpiar_json_robustez(response.text))
+        response_text = call_llm_router([prompt], [], model_name, json_mode=True)
+        data = json.loads(limpiar_json_robustez(response_text))
         return data.get("descripcion_completa", ""), data.get("razon", "")
     except Exception as e:
         print(f"Error generando descripción lógica del gráfico: {e}")
@@ -450,11 +570,8 @@ def generar_descripcion_grafico_logico_llm(pregunta, opciones_texto, seccion, ta
 # --- FUNCIÓN GENERADORA DE PROMPTS DE IMAGEN (NUEVA) ---
 def generar_prompt_imagen_llm(pregunta, opciones_texto, seccion, taxonomia_dict, model_name):
     """
-    Genera un prompt estructurado y optimizado para la creación de imágenes
-    educativas acordes al tipo de ítem psicométrico.
-    seccion: 'enunciado' o 'opcion_A/B/C/D'
+    Genera un prompt estructurado y optimizado para la creación de imágenes educativas.
     """
-    model = GenerativeModel(model_name)
     tax_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
     
     prompt = f"""
@@ -473,7 +590,7 @@ def generar_prompt_imagen_llm(pregunta, opciones_texto, seccion, taxonomia_dict,
     3. Usa estilo "ilustración educativa limpia, vector art, fondo blanco".
     4. Adapta la complejidad visual al grado escolar indicado en la taxonomía.
     5. NO menciones texto, etiquetas ni palabras dentro de la imagen.
-    6. El prompt debe estar en INGLÉS (Imagen 3.0 funciona mejor así).
+    6. El prompt debe estar en INGLÉS.
     
     --- FORMATO DE SALIDA (JSON ÚNICAMENTE) ---
     {{
@@ -483,22 +600,52 @@ def generar_prompt_imagen_llm(pregunta, opciones_texto, seccion, taxonomia_dict,
     """
     
     try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        data = json.loads(limpiar_json_robustez(response.text))
+        response_text = call_llm_router([prompt], [], model_name, json_mode=True)
+        data = json.loads(limpiar_json_robustez(response_text))
         return data.get("prompt_imagen", ""), data.get("razon", "")
     except Exception as e:
         print(f"Error generando prompt de imagen: {e}")
         return "", ""
 
 # --- 2. FUNCIÓN DEL AUDITOR (ACTUALIZADA CON LIMPIEZA DE JSON) ---
-def auditar_item_llm(item_json_texto, taxonomia_dict, model_name):
+def auditar_item_llm(item_json_texto, taxonomia_dict, model_name, item_original=None, nivel_similitud=None, imagenes_original=None):
     """
     AUDITOR: Audita el ítem Y la coherencia de los gráficos (enunciado Y opciones).
+    Cuando se proveen item_original/imagenes_original y nivel_similitud (modo Espejo), agrega criterio de fidelidad al nivel.
     """
-    
-    # Modelo de Gemini (ahora dinámico)
-    model = GenerativeModel(model_name)
     taxonomia_texto = "\n".join([f"* {k}: {v}" for k, v in taxonomia_dict.items()])
+    imagenes_original = imagenes_original or []
+
+    # Bloque condicional: criterio de similitud solo para modo Espejo
+    tiene_original = bool(item_original) or bool(imagenes_original)
+    if tiene_original and nivel_similitud:
+        if nivel_similitud == "Alta":
+            regla_similitud = """Solo deben haber cambiado datos numéricos y nombres propios respecto al original.
+    Si el escenario, la estructura de las opciones, la lógica de resolución o el orden de ideas fue alterado significativamente, es "❌ NO CUMPLE"."""
+        elif nivel_similitud == "Media":
+            regla_similitud = """Debe haberse cambiado el escenario o contexto narrativo y la representación de datos respecto al original.
+    Si el escenario es idéntico o muy similar al original, es "❌ NO CUMPLE".
+    Si la lógica de resolución cambió radicalmente (se evalúa una habilidad diferente), es "❌ NO CUMPLE"."""
+        else:  # Baja
+            regla_similitud = """El ítem DEBE ser RADICALMENTE diferente al original en todos los aspectos superficiales. Verifica cada punto — cualquiera es causa de "❌ NO CUMPLE":
+    - ¿El escenario o dominio temático es igual o similar? (ej. ambos hablan de ventas, ambos de sucursales, ambos de temperaturas) → "❌ NO CUMPLE"
+    - ¿Las etiquetas o entidades son iguales o similares? (ej. ambos usan P/Q/R/S, mismo tipo de empresa, mismas categorías) → "❌ NO CUMPLE"
+    - ¿Algún valor numérico del original aparece en las opciones o en el enunciado del nuevo ítem? → "❌ NO CUMPLE"
+    - ¿Hay frases, expresiones o fragmentos de redacción copiados o parafraseados del original? → "❌ NO CUMPLE"
+    - ¿Las opciones del nuevo ítem tienen los mismos valores o son derivados directos de los valores del original? → "❌ NO CUMPLE"
+    RECUERDA: las opciones del nuevo ítem deben ser calculadas desde cero a partir del nuevo escenario inventado, no derivadas del original.
+    Lo ÚNICO permitido: misma habilidad cognitiva (ej. calcular rango) y mismo tipo de operación abstracta. Absolutamente todo lo demás debe ser diferente."""
+
+        ref_texto = f"\n    **ÍTEM ORIGINAL EN TEXTO (referencia):**\n    {item_original}" if item_original else "\n    (El ítem original fue entregado como imagen — compara visualmente con las imágenes adjuntas)"
+        criterio_similitud_prompt = f"""
+    8. **Fidelidad al Nivel de Similitud ({nivel_similitud})**: Compara el ítem generado contra el ÍTEM ORIGINAL.
+    {regla_similitud}
+    {ref_texto}
+    """
+        criterio_similitud_json = f'{{ "criterio": "Fidelidad al Nivel de Similitud ({nivel_similitud})", "estado": "✅ CUMPLE", "comentario": "..." }},'
+    else:
+        criterio_similitud_prompt = ""
+        criterio_similitud_json = ""
 
     prompt_auditor = f"""
     Eres un auditor psicométrico ELITE y extremadamente RIGUROSO. Tu misión es asegurar que el ítem cumpla con los estándares de calidad psicométrica y la taxonomía educativa.
@@ -519,6 +666,12 @@ def auditar_item_llm(item_json_texto, taxonomia_dict, model_name):
     5. **Plausibilidad de Distractores**: ¿Todos los distractores son plausibles para un estudiante con conocimiento parcial? Un distractor absurdo o trivialmente descartable es "⚠️ OBSERVACIÓN" o "❌ NO CUMPLE".
     6. **Justificaciones Educativas**: Cada justificación de distractor debe explicar la LÓGICA DEL ERROR del estudiante (qué confundió, qué malentendió), no solo por qué la opción es incorrecta.
     7. **Coherencia Visual**: Si se solicita un gráfico, la descripción debe ser inequívoca y suficiente para construirlo sin decisiones adicionales.
+    8. **Pistas Formales en Opciones**: Revisa las 4 opciones en busca de pistas que delaten la clave. Es "❌ NO CUMPLE" si: alguna opción es notoriamente más larga que las demás; las opciones mezclan registros (técnico vs. coloquial); la estructura gramatical es diferente entre opciones; alguna opción repite frases del enunciado; alguna opción usa adverbios absolutos ("siempre", "nunca", "jamás", "completamente", "todos", "ninguno").
+    9. **Negaciones con Formato**: Si el enunciado contiene una negación principal (NO, EXCEPTO, etc.), debe estar escrita en MAYÚSCULA Y NEGRITA (ej. **NO**). Si aparece en minúscula o sin negritas, es "❌ NO CUMPLE".
+    10. **Sin Combinaciones Prohibidas**: Las opciones no pueden contener enunciados tipo "Todas las anteriores", "Ninguna de las anteriores", "A y B son correctas" o cualquier variante. Si aparecen, es "❌ NO CUMPLE".
+    11. **Anonimato**: El ítem no debe mencionar personas reales, marcas comerciales, instituciones identificables, políticos ni celebridades. Nombres genéricos ficticios son aceptables. Si aparece un nombre real identificable, es "❌ NO CUMPLE".
+    12. **Sin Contenido Sensible**: El ítem no debe abordar temas de religión, política, sexualidad, género, etnicidad, violencia o ideologías. Si lo hace, es "❌ NO CUMPLE".
+    {criterio_similitud_prompt}
 
     --- REGLAS DE DICTAMEN ---
     - "✅ CUMPLE": Todos los criterios en "✅ CUMPLE" o "⚠️ OBSERVACIÓN", y ninguno en "❌ NO CUMPLE".
@@ -534,7 +687,13 @@ def auditar_item_llm(item_json_texto, taxonomia_dict, model_name):
         {{ "criterio": "Univocidad de la Clave", "estado": "✅ CUMPLE", "comentario": "..." }},
         {{ "criterio": "Plausibilidad de Distractores", "estado": "✅ CUMPLE", "comentario": "..." }},
         {{ "criterio": "Justificaciones Educativas", "estado": "✅ CUMPLE", "comentario": "..." }},
-        {{ "criterio": "Coherencia Visual", "estado": "✅ CUMPLE", "comentario": "..." }}
+        {{ "criterio": "Coherencia Visual", "estado": "✅ CUMPLE", "comentario": "..." }},
+        {{ "criterio": "Pistas Formales en Opciones", "estado": "✅ CUMPLE", "comentario": "..." }},
+        {{ "criterio": "Negaciones con Formato", "estado": "✅ CUMPLE", "comentario": "..." }},
+        {{ "criterio": "Sin Combinaciones Prohibidas", "estado": "✅ CUMPLE", "comentario": "..." }},
+        {{ "criterio": "Anonimato", "estado": "✅ CUMPLE", "comentario": "..." }},
+        {{ "criterio": "Sin Contenido Sensible", "estado": "✅ CUMPLE", "comentario": "..." }},
+        {criterio_similitud_json}
       ],
       "dictamen_final": "✅ CUMPLE" o "⚠️ CUMPLE CON OBSERVACIONES" o "❌ RECHAZADO",
       "correcciones": [
@@ -543,22 +702,12 @@ def auditar_item_llm(item_json_texto, taxonomia_dict, model_name):
       "observaciones_finales": "Resumen ejecutivo del estado del ítem. Si se rechaza, explica el problema principal."
     }}
     """
-    
-    config_generacion = GenerationConfig(
-        response_mime_type="application/json"
-    )
 
     try:
-        response = model.generate_content(
-            prompt_auditor, 
-            generation_config=config_generacion
-        )
-        
-        raw_text = response.text
-        return limpiar_json_robustez(raw_text)
-
+        response_text = call_llm_router([prompt_auditor], imagenes_original, model_name, json_mode=True)
+        return limpiar_json_robustez(response_text)
     except Exception as e:
-        st.error(f"Error al contactar Vertex AI (Auditor): {e}")
+        st.error(f"Error al contactar IA (Auditor): {e}")
         return None
 
 # --- 3. FUNCIONES DE EXPORTACIÓN (ACTUALIZADAS) ---
@@ -1010,36 +1159,75 @@ def generar_oportunidad_mejora_llm(taxonomia_data, justificacion_clave, model_na
 st.set_page_config(layout="wide")
 st.title("🤖 Suite de Creación Psicométrica: Espejazos")
 
+# --- INICIALIZACIÓN MÁQUINA DE ESTADOS PARA CONTEXTOS ---
+if "etapa_contexto" not in st.session_state:
+    st.session_state.etapa_contexto = "CREACION_CONTEXTO"
+if "contexto_compartido_texto" not in st.session_state:
+    st.session_state.contexto_compartido_texto = ""
+if "contexto_compartido_imagen" not in st.session_state:
+    st.session_state.contexto_compartido_imagen = None
+if "contexto_area" not in st.session_state:
+    st.session_state.contexto_area = None
+if "contexto_grado" not in st.session_state:
+    st.session_state.contexto_grado = None
+if "total_items_contexto" not in st.session_state:
+    st.session_state.total_items_contexto = 2
+if "item_actual_contexto" not in st.session_state:
+    st.session_state.item_actual_contexto = 1
+
 # --- NAVEGACIÓN LATERAL ---
 with st.sidebar:
     st.header("Modo de Creación")
     modo_creacion = st.radio(
         "¿Qué deseas hacer hoy?",
-        options=["✨ Nuevo Ítem", "🎨 Ítem Inspirado", "🪞 Ítem Espejo"],
+        options=["✨ Nuevo Ítem", "🎨 Ítem Inspirado", "🪞 Ítem Espejo", "🧩 Generación en Contexto (Bloques)"],
         index=2 # Espejo por defecto para no romper el flujo previo
     )
     
     st.divider()
+    st.header("🔐 Conexión LLM / API Keys")
+    proveedor_llm = st.radio(
+        "Proveedor de Inteligencia Artificial",
+        options=["🏢 Vertex AI (Nativo)", "🔑 Google Gemini (API Key)", "🔑 OpenAI (API Key)", "🔑 Anthropic Claude (API Key)"],
+        index=0,
+        help="Vertex AI es la conexión Nativa vía Google Cloud. Las API Keys te permiten traer tu propio motor de pago."
+    )
+    st.session_state["proveedor_llm"] = proveedor_llm
+    
+    # Renderizamos los inputs condicionalmente y determinamos la lista de modelos
+    if proveedor_llm == "🔑 Google Gemini (API Key)":
+        st.text_input("Ingresa tu Gemini API Key:", type="password", key="api_key_gemini")
+        modelos_disponibles = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
+    elif proveedor_llm == "🔑 OpenAI (API Key)":
+        st.text_input("Ingresa tu OpenAI API Key (sk-...):", type="password", key="api_key_openai")
+        modelos_disponibles = ["gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini"]
+    elif proveedor_llm == "🔑 Anthropic Claude (API Key)":
+        st.text_input("Ingresa tu Anthropic API Key (sk-ant-...):", type="password", key="api_key_anthropic")
+        modelos_disponibles = ["claude-opus-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"]
+    else:
+        # Vertex nativo
+        modelos_disponibles = [
+            "gemini-3.1-pro-preview",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-exp"
+        ]
+        
+    st.divider()
     st.header("⚙️ Configuración Global")
-    # --- Selección de Modelos (Verificados Feb 2026) ---
-    modelos_disponibles = [
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash-exp"
-    ]
+    
     modelo_generador_sel = st.selectbox(
         "Modelo para Generar Ítem",
         options=modelos_disponibles,
-        index=4  # gemini-2.5-flash por defecto
+        index=0 if proveedor_llm != "🏢 Vertex AI (Nativo)" else 4
     )
     modelo_auditor_sel = st.selectbox(
         "Modelo para Auditar Ítem",
         options=modelos_disponibles,
-        index=0,  # gemini-3.1-pro-preview: más capaz e independiente del generador
+        index=0,
         help="Se recomienda usar un modelo diferente (y más potente) que el generador para una auditoría independiente."
     )
 
@@ -1079,11 +1267,23 @@ with col2:
             # Función auxiliar para mostrar estado visual
             def mark(val): return "✅" if val else "❌"
 
-            st.write(f"{mark(st.session_state.get('tax_grado'))} **Grado y Área**")
-            grado_sel = st.selectbox("Grado", options=df1['Grado'].unique(), key="tax_grado")
+            if modo_creacion == "🧩 Generación en Contexto (Bloques)" and st.session_state.etapa_contexto != "CREACION_CONTEXTO":
+                grado_sel = st.session_state.contexto_grado
+                st.write(f"✅ **Grado:** {grado_sel} (Fijo por bloque)")
+                st.session_state['tax_grado'] = grado_sel # Simular el selector
+            else:
+                st.write(f"{mark(st.session_state.get('tax_grado'))} **Grado**")
+                grado_sel = st.selectbox("Grado", options=df1['Grado'].unique(), key="tax_grado")
             
             df_grado = df1[df1['Grado'] == grado_sel]
-            area_sel = st.selectbox("Área", options=df_grado['Área'].unique(), key="tax_area")
+            
+            if modo_creacion == "🧩 Generación en Contexto (Bloques)" and st.session_state.etapa_contexto != "CREACION_CONTEXTO":
+                area_sel = st.session_state.contexto_area
+                st.write(f"✅ **Área:** {area_sel} (Fijo por bloque)")
+                st.session_state['tax_area'] = area_sel # Simular el selector
+            else:
+                st.write(f"{mark(st.session_state.get('tax_area'))} **Área**")
+                area_sel = st.selectbox("Área", options=df_grado['Área'].unique(), key="tax_area")
 
             st.write(f"{mark(st.session_state.get('tax_comp1'))} **Estructura**")
             df_area_h1 = df_grado[df_grado['Área'] == area_sel]
@@ -1178,7 +1378,10 @@ with col1:
             
     elif modo_creacion == "🪞 Ítem Espejo":
         st.header("1. Cargar Ítem Base")
-        base_input_type = st.radio("Entrada base", ["🖼️ Imagen", "📝 Texto"], horizontal=True)
+        base_input_type = st.radio("Entrada base", ["🖼️ Imagen", "📝 Texto", "📄 PDF", "🔍 Buscar en BD Improve"], horizontal=True)
+        
+        # Variable especial para taxonomía importada de DB
+        st.session_state["taxonomia_importada"] = None
         
         if base_input_type == "🖼️ Imagen":
             imagen_subida = st.file_uploader(
@@ -1187,14 +1390,189 @@ with col1:
             )
             if imagen_subida:
                 st.image(imagen_subida, caption="Ítem cargado", use_container_width=True)
-        else:
+        elif base_input_type == "📝 Texto":
             contexto_adicional = st.text_area(
                 "Pega el texto de la pregunta original",
                 placeholder="Enunciado y opciones...",
                 height=250,
                 key="contexto_espejo"
             )
+        elif base_input_type == "📄 PDF":
+            pdf_subido = st.file_uploader("Sube el archivo PDF", type=["pdf"])
+            contexto_adicional = ""
+            if pdf_subido:
+                try:
+                    pdf_reader = PyPDF2.PdfReader(pdf_subido)
+                    texto_extraido = ""
+                    for page in pdf_reader.pages:
+                        texto_extraido += page.extract_text() + "\n"
+                    contexto_adicional = st.text_area("Texto extraído del PDF (puedes editarlo)", value=texto_extraido, height=250, key="contexto_pdf")
+                except Exception as e:
+                    st.error(f"Error al leer el PDF: {e}")
+        elif base_input_type == "🔍 Buscar en BD Improve":
+            item_id_input = st.text_input("Ingresa el ID del Ítem (Ej: 12345)")
+            contexto_adicional = ""
+            if item_id_input:
+                try:
+                    df_improve = cargar_base_improve()
+                    if df_improve is None:
+                        st.error("No se pudo cargar la base de datos Improve local.")
+                    else:
+                        # Filtrar por ItemId. Convertimos asumiendo numérico o texto
+                        item_id_num = float(item_id_input) if item_id_input.isnumeric() else item_id_input
+                        
+                        df_item = df_improve[df_improve['ItemId'] == item_id_num]
+                        if df_item.empty:
+                            # Fallback a string si no lo encontró como número
+                            df_item = df_improve[df_improve['ItemId'].astype(str) == str(item_id_input)]
+                            
+                        if df_item.empty:
+                            st.warning(f"No se encontró el ítem con ID {item_id_input} en la base de datos.")
+                        else:
+                            st.success("Ítem encontrado exitosamente")
+                            
+                            # Tomar la primera fila para datos comunes
+                            row = df_item.iloc[0]
+                            
+                            # Extraer componentes del ítem
+                            contexto = str(row.get('ItemContexto', ''))
+                            enunciado = str(row.get('ItemEnunciado', ''))
+                            
+                            if contexto == "nan": contexto = ""
+                            if enunciado == "nan": enunciado = ""
+                            
+                            # Construir texto amigable para el usuario y el LLM
+                            texto_armado = f"**Contexto:**\n{contexto}\n\n**Enunciado:**\n{enunciado}\n\n**Opciones:**\n"
+                            
+                            opciones_str = []
+                            for index, opt_row in df_item.iterrows():
+                                texto_opt = str(opt_row.get('AlternativaTexto', ''))
+                                # Usamos AlternativaCorrecta o IsCorrect (si es 1, True o 'Clave')
+                                es_correcta = str(opt_row.get('AlternativaCorrecta', '')).lower() in ['1', '1.0', 'true', 'sí', 'si', 'clave']
+                                # AlternativaClave suele ser "A", "B", etc.
+                                letra = str(opt_row.get('AlternativaClave', '?'))
+                                
+                                if es_correcta:
+                                    opciones_str.append(f"{letra}: <span style='color:red; font-weight:bold;'>{texto_opt} (CORRECTA)</span>")
+                                else:
+                                    opciones_str.append(f"{letra}: {texto_opt}")
+                                    
+                            texto_armado += "<br>".join(opciones_str)
+                            
+                            # Mostrar el item en pantalla
+                            st.markdown(texto_armado, unsafe_allow_html=True)
+                            
+                            # Convertimos a markdown plano para enviarlo al LLM
+                            contexto_adicional = texto_armado.replace("<span style='color:red; font-weight:bold;'>", "").replace("</span>", "").replace("<br>", "\n")
+                            
+                            # Extraer taxonomía silenciosamente
+                            tax_importada = {
+                                "Grado": str(row.get("ItemGradoNombre", "")),
+                                "Área": str(row.get("BloqueAreaNombre", "")),
+                                "Competencia": str(row.get("CompetenciaNombre", "")),
+                                "Afirmación": str(row.get("AfirmacionNombre", "")),
+                                "Evidencia": str(row.get("EvidenciaNombre", "")),
+                                "Ref. Temática": str(row.get("TematicaNombre", "")),
+                                "Componente_Estructura": str(row.get("ComponenteNombre", "")),
+                                "Componente_Tematica": str(row.get("TematicaNombre", "")) # Fallback
+                            }
+                            
+                            # Limpiar NaN o campos vacíos
+                            tax_importada = {k: ("No aplica" if pd.isna(v) or v == "nan" else v) for k,v in tax_importada.items()}
+                            st.session_state["taxonomia_importada"] = tax_importada
+                            
+                            st.write("**Taxonomía Importada Automáticamente:**")
+                            st.json(tax_importada)
+                                
+                except Exception as e:
+                    st.error(f"Error procesando la base de datos: {e}")
             
+            
+    elif modo_creacion == "🧩 Generación en Contexto (Bloques)":
+        if st.session_state.etapa_contexto == "CREACION_CONTEXTO":
+            st.header("1. Definir o Cargar el Contexto Base")
+            metodo_contexto = st.radio("¿Cómo deseas crear el contexto?", ["💡 Generar con IA", "📝 Escribirlo / Pegarlo", "🖼️ Subir Imagen"], horizontal=True)
+            
+            if metodo_contexto == "💡 Generar con IA":
+                idea_base = st.text_input("¿Sobre qué tema quieres el contexto? (Ej: Los hoyos negros)", key="idea_ctx")
+                if st.button("Generar Contexto Base con IA 🚀", type="primary"):
+                    if idea_base and st.session_state.get('tax_grado') and st.session_state.get('tax_area'):
+                        tax_temp = {
+                            "Grado": st.session_state.get('tax_grado'),
+                            "Área": st.session_state.get('tax_area')
+                        }
+                        with st.spinner("Generando un texto base robusto (Lectura/Caso)..."):
+                            ctx_generado = generar_contexto_base_llm(tax_temp, idea_base, modelo_generador_sel)
+                            st.session_state.contexto_generado_temp = ctx_generado
+                    else:
+                        st.warning("Escribe una idea y asegúrate de seleccionar Grado y Área en la Col. 2")
+                
+                # Paso intermedio de revisión de IA
+                if st.session_state.get("contexto_generado_temp"):
+                    st.write("---")
+                    st.subheader("Revisa y Edita el Contexto")
+                    contexto_editado = st.text_area(
+                        "Contexto generado por IA:", 
+                        value=st.session_state.contexto_generado_temp, 
+                        height=250
+                    )
+                    if st.button("✅ Aprobar Contexto IA y Continuar", type="primary"):
+                        st.session_state.contexto_compartido_texto = contexto_editado
+                        st.session_state.contexto_area = st.session_state.get('tax_area')
+                        st.session_state.contexto_grado = st.session_state.get('tax_grado')
+                        st.session_state.contexto_generado_temp = None  # Limpiar variable temporal
+                        st.session_state.etapa_contexto = "SETEO_CANTIDAD"
+                        st.rerun()
+                        
+            elif metodo_contexto == "📝 Escribirlo / Pegarlo":
+                contexto_txt = st.text_area("Pega aquí el texto base que usarán todas las preguntas:", height=250)
+                if st.button("Aprobar Contexto y Continuar", type="primary"):
+                    if contexto_txt and st.session_state.get('tax_grado') and st.session_state.get('tax_area'):
+                        st.session_state.contexto_compartido_texto = contexto_txt
+                        st.session_state.contexto_area = st.session_state.get('tax_area')
+                        st.session_state.contexto_grado = st.session_state.get('tax_grado')
+                        st.session_state.etapa_contexto = "SETEO_CANTIDAD"
+                        st.rerun()
+                    else:
+                        st.warning("Escribe un contexto válido y asegúrate de seleccionar Grado y Área en la Col. 2")
+            else:
+                imagen_subida_ctx = st.file_uploader("Sube el pantallazo de la lectura/gráfico", type=["png", "jpg", "jpeg"])
+                if imagen_subida_ctx:
+                    st.image(imagen_subida_ctx, use_container_width=True)
+                    if st.button("Aprobar Imagen y Continuar", type="primary"):
+                        if st.session_state.get('tax_grado') and st.session_state.get('tax_area'):
+                            st.session_state.contexto_compartido_imagen = imagen_subida_ctx
+                            st.session_state.contexto_area = st.session_state.get('tax_area')
+                            st.session_state.contexto_grado = st.session_state.get('tax_grado')
+                            st.session_state.etapa_contexto = "SETEO_CANTIDAD"
+                            st.rerun()
+                        else:
+                            st.warning("Asegúrate de seleccionar Grado y Área en la Col. 2")
+                            
+        elif st.session_state.etapa_contexto == "SETEO_CANTIDAD":
+            st.header("2. Diseño del Bloque")
+            n_items = st.number_input("¿Cuántos ítems deseas generar para este contexto?", min_value=2, max_value=7, value=3)
+            if st.button("Comenzar a Diseñar Ítems 🚀", type="primary", use_container_width=True):
+                st.session_state.total_items_contexto = int(n_items)
+                st.session_state.item_actual_contexto = 1
+                st.session_state.etapa_contexto = "GENERACION_ITEMS"
+                st.rerun()
+                
+        elif st.session_state.etapa_contexto == "GENERACION_ITEMS":
+            st.header(f"3. Diseñando Ítem {st.session_state.item_actual_contexto} de {st.session_state.total_items_contexto}")
+            with st.expander("Ver Contexto Compartido Activo", expanded=False):
+                if st.session_state.contexto_compartido_texto:
+                    st.write(st.session_state.contexto_compartido_texto)
+                if st.session_state.contexto_compartido_imagen:
+                    st.image(st.session_state.contexto_compartido_imagen)
+            
+            contexto_adicional = st.text_area(
+                 "Escribe qué debe evaluar específicamente esta pregunta:",
+                 placeholder="Ej: Formula una pregunta sobre el segundo párrafo que evalúe inferencia local...",
+                 height=100
+            )
+
+    if modo_creacion != "🧩 Generación en Contexto (Bloques)":
         st.divider()
         st.subheader("Nivel de Similitud")
         similitud_sel = st.select_slider(
@@ -1211,7 +1589,11 @@ with col1:
 
 # --- 5. LÓGICA DEL BOTÓN (Bucle Generador-Auditor) ---
 st.divider()
-if st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_container_width=True, type="primary"):
+mostrar_boton_generar = True
+if modo_creacion == "🧩 Generación en Contexto (Bloques)" and st.session_state.etapa_contexto != "GENERACION_ITEMS":
+    mostrar_boton_generar = False
+
+if mostrar_boton_generar and st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_container_width=True, type="primary"):
     
     # Validaciones según modo
     input_valido = False
@@ -1238,29 +1620,46 @@ if st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_c
         if base_input_type == "🖼️ Imagen" and imagen_subida:
             input_valido = True
             inputs_llm["imagenes"] = [imagen_subida]
-        elif base_input_type == "📝 Texto" and contexto_adicional:
+        elif base_input_type in ["📝 Texto", "📄 PDF", "🔍 Buscar en BD Improve"] and contexto_adicional:
             input_valido = True
             inputs_llm["texto"] = contexto_adicional
         else:
-            st.warning("Carga un ítem base (imagen o texto).")
+            st.warning("Carga un ítem base válido (imagen, texto, PDF o un ID de Improve que exista).")
+            
+    elif modo_creacion == "🧩 Generación en Contexto (Bloques)":
+        if contexto_adicional:
+            input_valido = True
+            texto_compilado = f"CONTEXTO BASE:\n{st.session_state.contexto_compartido_texto}\n\nINSTRUCCIÓN ESPECÍFICA PARA ESTA PREGUNTA:\n{contexto_adicional}\n\nIMPORTANTE: NO RE-ESCRIBAS EL CONTEXTO BASE. SOLO GENERA EL ENUNCIADO Y LAS 4 OPCIONES DE RESPUESTA BASADO ÚNICAMENTE ESTRICTAMENTE EN EL CONTEXTO PROVEÍDO. TU ENUNCIADO DEBE SER AUTOSUFICIENTE Y ENLAZAR AL CONTEXTO INDIRECTAMENTE SIN COPIAR SU TEXTO."
+            inputs_llm["texto"] = texto_compilado
+            if st.session_state.contexto_compartido_imagen:
+                inputs_llm["imagenes"] = [st.session_state.contexto_compartido_imagen]
+        else:
+            st.warning("Escribe una instrucción específica sobre qué evaluar en esta iteración.")
 
     if input_valido:
-        # Verificación de taxonomía usando session_state
-        tax_keys = {
-            "Grado": "tax_grado", "Área": "tax_area", 
-            "Competencia": "tax_competen", "Afirmación": "tax_afirm", 
-            "Evidencia": "tax_evid", "Ref. Temática": "tax_ref",
-            "Componente_Estructura": "tax_comp1", "Componente_Tematica": "tax_comp2"
-        }
-        faltantes_tax = [label for label, key in tax_keys.items() if not st.session_state.get(key)]
-
-        if data is None:
-            st.warning("El archivo Excel de taxonomía no se pudo cargar.")
-        elif faltantes_tax:
-            st.error(f"⚠️ **Taxonomía incompleta:** Faltan {', '.join(faltantes_tax)}")
-            st.info("Por favor, completa todas las selecciones en la Columna 2.")
-        else:
-            taxonomia_seleccionada = {label: st.session_state.get(key) for label, key in tax_keys.items()}
+        # Verificación de taxonomía usando session_state (solo si NO se importó por BD Improve)
+        taxonomia_seleccionada = st.session_state.get("taxonomia_importada", None)
+        
+        if not taxonomia_seleccionada:
+            tax_keys = {
+                "Grado": "tax_grado", "Área": "tax_area", 
+                "Competencia": "tax_competen", "Afirmación": "tax_afirm", 
+                "Evidencia": "tax_evid", "Ref. Temática": "tax_ref",
+                "Componente_Estructura": "tax_comp1", "Componente_Tematica": "tax_comp2"
+            }
+            faltantes_tax = [label for label, key in tax_keys.items() if not st.session_state.get(key)]
+    
+            if data is None:
+                st.warning("El archivo Excel de taxonomía no se pudo cargar.")
+                input_valido = False
+            elif faltantes_tax:
+                st.error(f"⚠️ **Taxonomía incompleta:** Faltan {', '.join(faltantes_tax)}")
+                st.info("Por favor, completa todas las selecciones en la Columna 2.")
+                input_valido = False
+            else:
+                taxonomia_seleccionada = {label: st.session_state.get(key) for label, key in tax_keys.items()}
+        
+        if input_valido and taxonomia_seleccionada:
             st.session_state['taxonomia_actual'] = taxonomia_seleccionada
             
             max_intentos = 3
@@ -1287,7 +1686,10 @@ if st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_c
                         continue
 
                     status.update(label=f"Intento {intento_actual}/{max_intentos}: Auditando ítem con {modelo_auditor_sel}...")
-                    audit_json_str = auditar_item_llm(item_json_str, taxonomia_seleccionada, modelo_auditor_sel)
+                    item_original_para_auditor = inputs_llm.get("texto", "") if modo_creacion == "🪞 Ítem Espejo" else None
+                    imagenes_original_para_auditor = inputs_llm.get("imagenes", []) if modo_creacion == "🪞 Ítem Espejo" else []
+                    nivel_similitud_para_auditor = similitud_sel if modo_creacion == "🪞 Ítem Espejo" else None
+                    audit_json_str = auditar_item_llm(item_json_str, taxonomia_seleccionada, modelo_auditor_sel, item_original_para_auditor, nivel_similitud_para_auditor, imagenes_original_para_auditor)
 
                     if audit_json_str is None:
                         status.update(label=f"⚠️ Error en auditoría (Intento {intento_actual}). Reintentando...", state="running")
@@ -1306,9 +1708,9 @@ if st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_c
                             if dictamen == "⚠️ CUMPLE CON OBSERVACIONES":
                                 observaciones = audit_data.get("correcciones", [])
                                 if observaciones:
-                                    with st.expander("⚠️ Observaciones del auditor (el ítem es usable, pero considera estos puntos)"):
-                                        for obs in observaciones:
-                                            st.warning(f"**{obs.get('criterio')}** [{obs.get('prioridad', '')}]: {obs.get('accion', '')}")
+                                    st.write("**⚠️ Observaciones del auditor (considera estos puntos):**")
+                                    for obs in observaciones:
+                                        st.warning(f"**{obs.get('criterio')}** [{obs.get('prioridad', '')}]: {obs.get('accion', '')}")
                             break
 
                         else:  # ❌ RECHAZADO
@@ -1324,7 +1726,8 @@ if st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_c
                                 feedback_auditor = audit_data.get("observaciones_finales", "Rechazado sin observaciones.")
 
                             status.update(label=f"Intento {intento_actual} Rechazado. Preparando re-intento...")
-                            st.expander(f"Detalles del Rechazo (Intento {intento_actual})").json(audit_data)
+                            st.write(f"**Detalles del Rechazo (Intento {intento_actual})**")
+                            st.json(audit_data)
 
                     except json.JSONDecodeError:
                         st.error(f"Error al leer respuesta JSON del auditor: {audit_json_str}")
@@ -1344,6 +1747,12 @@ if st.button(f"🚀 Generar {modo_creacion.split()[-1]} (con Auditoría)", use_c
 if 'show_editor' in st.session_state and st.session_state.show_editor:
     st.divider()
     st.header("3. Edita el Ítem Generado")
+    
+    if modo_creacion == "🧩 Generación en Contexto (Bloques)" and st.session_state.get('contexto_compartido_texto'):
+        with st.expander("📖 Ver Contexto Base del Bloque", expanded=False):
+            st.write(st.session_state.contexto_compartido_texto)
+            if st.session_state.get('contexto_compartido_imagen'):
+                st.image(st.session_state.contexto_compartido_imagen)
     
     # --- ENUNCIADO Y GRÁFICO DEL ENUNCIADO ---
     st.subheader("Enunciado")
@@ -1422,8 +1831,13 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
                             spec = build_visual_json_with_llm(texto_desc)
                             if spec:
                                 st.session_state.editable_grafico_json_enunciado = json.dumps([spec], indent=2)
-                                st.session_state['img_buffer_enunciado'] = None
-                                st.success("¡JSON generado!")
+                                # Auto-render
+                                try:
+                                    buf = crear_grafico(spec.get("tipo_elemento"), spec.get("datos", {}), spec.get("configuracion", {}))
+                                    st.session_state['img_buffer_enunciado'] = buf
+                                except Exception:
+                                    st.session_state['img_buffer_enunciado'] = None
+                                st.success("¡JSON y Gráfico generados!")
                     else:
                         st.warning("Módulo no disponible.")
             with col_b:
@@ -1533,9 +1947,15 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
                                 texto_desc = st.session_state[f"editable_opcion_{letra.lower()}_grafico_texto"]
                                 spec = build_visual_json_with_llm(texto_desc)
                                 if spec:
-                                    st.session_state[f"editable_opcion_{letra.lower()}_grafico_json"] = json.dumps([spec], indent=2)
+                                    json_op_key = f"editable_opcion_{letra.lower()}_grafico_json"
+                                    st.session_state[json_op_key] = json.dumps([spec], indent=2)
+                                # Auto-render
+                                try:
+                                    buf = crear_grafico(spec.get("tipo_elemento"), spec.get("datos", {}), spec.get("configuracion", {}))
+                                    st.session_state[f'img_buffer_op_{letra}'] = buf
+                                except Exception:
                                     st.session_state[f'img_buffer_op_{letra}'] = None
-                                    st.success(f"¡JSON Opción {letra} generado!")
+                                st.success(f"¡JSON y Gráfico generados!")
                 with col_d:
                     if st.button(f"Renderizar 🖼️", key=f"btn_render_op_{letra}"):
                         if GRAFICOS_DISPONIBLES:
@@ -1722,3 +2142,24 @@ if 'show_editor' in st.session_state and st.session_state.show_editor:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+
+    # --- 7. CONTROL DE FLUJO PARA BLOQUES EN CONTEXTO ---
+    if modo_creacion == "🧩 Generación en Contexto (Bloques)":
+        st.divider()
+        if st.session_state.item_actual_contexto < st.session_state.total_items_contexto:
+            st.info(f"Has terminado el ítem {st.session_state.item_actual_contexto} de {st.session_state.total_items_contexto}.")
+            if st.button("Siguiente Ítem ➡️", type="primary", use_container_width=True):
+                st.session_state.item_actual_contexto += 1
+                st.session_state.show_editor = False # Ocultar el editor
+                st.rerun()
+        else:
+            st.success(f"¡Has completado el bloque de {st.session_state.total_items_contexto} ítems!")
+            if st.button("Finalizar Bloque y Crear Nuevo 🏁", type="primary", use_container_width=True):
+                st.session_state.etapa_contexto = "CREACION_CONTEXTO"
+                st.session_state.contexto_compartido_texto = ""
+                st.session_state.contexto_compartido_imagen = None
+                st.session_state.contexto_area = None
+                st.session_state.contexto_grado = None
+                st.session_state.item_actual_contexto = 1
+                st.session_state.show_editor = False
+                st.rerun()
